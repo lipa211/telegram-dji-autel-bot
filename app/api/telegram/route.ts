@@ -328,8 +328,7 @@ export async function POST(req: Request) {
       lines.push(`${label}: ${fact.fact_value}`);
     }
 
-    await sendMessage(chatId, lines.join("
-"));
+    await sendMessage(chatId, lines.join("\n"));
 
     return Response.json({ ok: true });
   }
