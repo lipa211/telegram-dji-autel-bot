@@ -636,96 +636,94 @@ export async function POST(req: Request) {
     return Response.json({ ok: true });
   }
 
-  if (text === "/profile") {
+  if (text === "/history") {
     const facts = await getLongTermFacts(chatId);
-
-    if (!facts.length) {
-      await sendMessage(chatId, "Пока профиль пуст.");
-      return Response.json({ ok: true });
-    }
 
     const map = Object.fromEntries(
       facts.map((f: any) => [f.fact_key, f.fact_value])
     );
 
-    const labels: Record<string, string> = {
-      car_make: "Марка",
-      car_model: "Модель",
-      car_year: "Год выпуска",
-      engine: "Двигатель",
-      vin: "VIN",
-      mileage: "Пробег",
-      license_plate: "Госномер",
-      transmission: "Коробка",
-      dtc_codes: "Ошибки",
-      current_problem: "Текущая неисправность",
-      repair_history: "История ремонта",
-      drone_model: "Дрон",
-      firmware: "Прошивка",
-      firmware_version: "Прошивка",
-      additional_battery: "Дополнительная батарея",
-      additional_battery_configuration: "Конфигурация батареи",
-      additional_battery_capacity: "Ёмкость батареи",
-      additional_battery_energy: "Энергия батареи",
-      additional_battery_weight: "Вес батареи",
-      battery_weight: "Вес батареи",
-      connection_type: "Подключение",
-      battery_connection: "Подключение батареи",
-      flight_time: "Время полёта",
-      real_flight_time: "Реальное время полёта",
-      payload: "Полезная нагрузка",
-      payload_weight: "Полезная нагрузка",
-      drone_weight: "Вес дрона",
-      notes: "Примечание",
-    };
+    const carName = [
+      map.car_make,
+      map.car_model,
+      map.car_year,
+    ].filter(Boolean).join(" ");
 
     const lines: string[] = [];
 
-    if (map.drone_model) {
-      lines.push(`Дрон: ${map.drone_model}`);
+    if (carName) {
+      lines.push(`Автомобиль: ${carName}`);
     }
 
-    const batteryParts: string[] = [];
-
-    if (map.additional_battery_configuration) {
-      batteryParts.push(map.additional_battery_configuration);
+    if (map.mileage) {
+      lines.push(`Пробег: ${map.mileage}`);
     }
 
-    if (map.additional_battery_capacity) {
-      batteryParts.push(map.additional_battery_capacity);
+    if (map.current_problem) {
+      lines.push(`Неисправность: ${map.current_problem}`);
     }
 
-    if (map.additional_battery_energy) {
-      batteryParts.push(map.additional_battery_energy);
+    if (map.dtc_codes) {
+      lines.push(`Коды ошибок: ${map.dtc_codes}`);
     }
 
-    if (batteryParts.length) {
-      lines.push(`Дополнительная батарея: ${batteryParts.join(", ")}`);
-    } else if (map.additional_battery) {
-      lines.push(`Дополнительная батарея: ${map.additional_battery}`);
+    if (map.repair_history) {
+      lines.push(`История ремонта: ${map.repair_history}`);
     }
 
-    const alreadyShown = new Set([
-      "drone_model",
-      "additional_battery",
-      "additional_battery_configuration",
-      "additional_battery_capacity",
-      "additional_battery_energy",
-    ]);
-
-    for (const fact of facts) {
-      if (alreadyShown.has(fact.fact_key)) continue;
-
-      const label =
-        labels[fact.fact_key] ||
-        fact.fact_key
-          .replace(/_/g, " ")
-          .replace(/^./, (c: string) => c.toUpperCase());
-
-      lines.push(`${label}: ${fact.fact_value}`);
+    if (!lines.length) {
+      await sendMessage(
+        chatId,
+        "История автомобиля пока пустая."
+      );
+      return Response.json({ ok: true });
     }
 
-    await sendMessage(chatId, lines.join("\n"));
+    await sendMessage(
+      chatId,
+      ["🔧 История автомобиля", "", ...lines].join("\n")
+    );
+
+    return Response.json({ ok: true });
+  }
+
+  if (text === "/profile") {
+    const facts = await getLongTermFacts(chatId);
+
+    const map = Object.fromEntries(
+      facts.map((f: any) => [f.fact_key, f.fact_value])
+    );
+
+    const fields: Array<[string, string]> = [
+      ["car_make", "Марка"],
+      ["car_model", "Модель"],
+      ["car_year", "Год выпуска"],
+      ["engine", "Двигатель"],
+      ["transmission", "Коробка"],
+      ["mileage", "Пробег"],
+      ["vin", "VIN"],
+      ["license_plate", "Госномер"],
+      ["dtc_codes", "Ошибки"],
+      ["current_problem", "Текущая неисправность"],
+      ["repair_history", "История ремонта"],
+    ];
+
+    const lines = fields
+      .filter(([key]) => map[key])
+      .map(([key, label]) => `${label}: ${map[key]}`);
+
+    if (!lines.length) {
+      await sendMessage(
+        chatId,
+        "Профиль автомобиля пока пуст."
+      );
+      return Response.json({ ok: true });
+    }
+
+    await sendMessage(
+      chatId,
+      ["🚗 Профиль автомобиля", "", ...lines].join("\n")
+    );
 
     return Response.json({ ok: true });
   }
