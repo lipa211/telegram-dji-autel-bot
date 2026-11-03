@@ -16,26 +16,6 @@ function getSupabase() {
   return createClient(url, key);
 }
 
-async function getRecentMessages(chatId: number, limit = 12) {
-  const supabase = getSupabase();
-
-  if (!supabase) return [];
-
-  const { data, error } = await supabase
-    .from("telegram_messages")
-    .select("role, content, created_at")
-    .eq("chat_id", chatId)
-    .order("created_at", { ascending: false })
-    .limit(limit);
-
-  if (error) {
-    console.error("Supabase read error:", error);
-    return [];
-  }
-
-  return (data || []).reverse();
-}
-
 async function saveMemoryMessage(params: {
   chatId: number;
   userId?: number;
@@ -705,61 +685,6 @@ async function sendMessage(chatId: number, text: string) {
 
 
 
-type VisualGuideItem = {
-  photo: string;
-  caption: string;
-};
-
-function getVisualGuideForCase(
-  facts: Record<string, string>,
-  userText: string
-): VisualGuideItem[] {
-  const make = (facts.car_make || "").toLowerCase();
-  const model = (facts.car_model || "").toLowerCase();
-  const year = (facts.car_year || "").toLowerCase();
-  const text = userText.toLowerCase();
-
-  const baseUrl =
-    process.env.NEXT_PUBLIC_APP_URL ||
-    "https://telegram-dji-autel-bot-2.vercel.app";
-
-  // Kia Sportage 2010 — пропадает звук
-  const isSportage2010 =
-    make.includes("kia") &&
-    model.includes("sportage") &&
-    year.includes("2010");
-
-  const isAudioProblem =
-    text.includes("звук") ||
-    text.includes("магнитол") ||
-    text.includes("динамик") ||
-    text.includes("усилител");
-
-  if (isSportage2010 && isAudioProblem) {
-    return [
-      {
-        photo: `${baseUrl}/guides/sportage2010/audio/diagram.png`,
-        caption:
-          "Схема проверки: звук есть до запуска → после запуска пропал.",
-      },
-      {
-        photo: `${baseUrl}/guides/sportage2010/audio/fuse-box.jpg`,
-        caption:
-          "Блок предохранителей. Проверяй AUDIO/AMP мультиметром, а не только визуально.",
-      },
-      {
-        photo: `${baseUrl}/guides/sportage2010/audio/amplifier.jpg`,
-        caption:
-          "Если отдельный усилитель установлен: проверяй питание, массу, REMOTE и MUTE в момент пропадания звука.",
-      },
-    ];
-  }
-
-  return [];
-}
-
-
-
 type VehicleSideCode =
   | "front_left"
   | "front_right"
@@ -792,8 +717,10 @@ function parseExplicitVehicleFacts(text: string) {
   const lower = text.toLowerCase();
   const result: Record<string, string> = {};
 
-  const generationMatch = text.match(/\b(KM|SL)\b/i);
-  if (generationMatch) result.generation = generationMatch[1].toUpperCase();
+  const generationMatch =
+    text.match(/\b(KM|SL)\b/) ||
+    text.match(/(?:кузов|поколение|код кузова|sportage\s*(?:ii|2)?)[^a-zа-яё0-9]{0,8}\b(km|sl)\b/i);
+  if (generationMatch) result.generation = (generationMatch[1] || "").toUpperCase();
 
   if (/\b2wd\b/i.test(text) || lower.includes("передний привод")) {
     result.drive = "2WD";
@@ -805,21 +732,19 @@ function parseExplicitVehicleFacts(text: string) {
   const engine = engineMatch?.[1] || engineMatch?.[2];
   if (engine) result.engine = engine.replace(",", ".");
 
-  const hasRear = /задн\w*/i.test(text);
-  const hasFront = /передн\w*/i.test(text);
-  const hasRight = /прав\w*/i.test(text);
-  const hasLeft = /лев\w*/i.test(text);
+  const pair = (a: string, b: string) =>
+    new RegExp(`(?:${a})\\w*[^а-яёa-z0-9]{0,8}(?:${b})\\w*|(?:${b})\\w*[^а-яёa-z0-9]{0,8}(?:${a})\\w*`, "i").test(text);
 
-  if (hasRear && hasRight) {
+  if (pair("задн", "прав")) {
     result.side = "задняя правая";
     result.sideCode = "rear_right";
-  } else if (hasRear && hasLeft) {
+  } else if (pair("задн", "лев")) {
     result.side = "задняя левая";
     result.sideCode = "rear_left";
-  } else if (hasFront && hasRight) {
+  } else if (pair("передн", "прав")) {
     result.side = "передняя правая";
     result.sideCode = "front_right";
-  } else if (hasFront && hasLeft) {
+  } else if (pair("передн", "лев")) {
     result.side = "передняя левая";
     result.sideCode = "front_left";
   }
@@ -1050,69 +975,6 @@ async function sendPhotoBuffer(
       await response.text()
     );
   }
-}
-
-async function sendPhoto(
-  chatId: number,
-  photo: string,
-  caption?: string
-) {
-  const token = process.env.TELEGRAM_BOT_TOKEN;
-
-  if (!token) return;
-
-  await fetch(
-    `https://api.telegram.org/bot${token}/sendPhoto`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        chat_id: chatId,
-        photo,
-        caption: caption
-          ? cleanTelegramText(caption)
-          : undefined,
-      }),
-    }
-  );
-}
-
-async function sendMediaGroup(
-  chatId: number,
-  items: Array<{
-    photo: string;
-    caption?: string;
-  }>
-) {
-  const token = process.env.TELEGRAM_BOT_TOKEN;
-
-  if (!token || !items.length) return;
-
-  const media = items
-    .slice(0, 3)
-    .map((item) => ({
-      type: "photo",
-      media: item.photo,
-      caption: item.caption
-        ? cleanTelegramText(item.caption)
-        : undefined,
-    }));
-
-  await fetch(
-    `https://api.telegram.org/bot${token}/sendMediaGroup`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        chat_id: chatId,
-        media,
-      }),
-    }
-  );
 }
 
 async function telegramFileToDataUrl(fileId: string) {
@@ -1387,9 +1249,9 @@ export async function POST(req: Request) {
         "",
         "/profile — показать профиль",
         "/memory — показать всю память",
-        "/set ключ = значение — сохранить факт",
-        "/del ключ — удалить один факт",
-        "/forget — очистить долгую память",
+        "/set ключ = значение — сохранить факт (авто → профиль машины, остальное → общая память)",
+        "/del ключ — удалить факт из соответствующей памяти",
+        "/forget — очистить общую долгую память чата",
         "",
         "Примеры:",
         "/set вес батареи = 460 г",
@@ -1701,26 +1563,25 @@ export async function POST(req: Request) {
         .replace(/[^a-zа-яё0-9]+/gi, "_")
         .replace(/^_+|_+$/g, "");
 
-    const activeCar = await getActiveCar(chatId);
+    const carFactKeys = new Set([
+      "car_make", "car_model", "car_year", "generation", "drive", "side",
+      "engine", "vin", "mileage", "license_plate", "transmission",
+      "dtc_codes", "current_problem", "repair_history", "parts",
+      "repair_cost", "service_status"
+    ]);
 
-    if (!activeCar) {
-      await sendMessage(
-        chatId,
-        "Сначала создай или выбери автомобиль: /car add"
-      );
-      return Response.json({ ok: true });
+    if (carFactKeys.has(normalizedKey)) {
+      const activeCar = await getActiveCar(chatId);
+      if (!activeCar) {
+        await sendMessage(chatId, "Для автомобильного факта сначала выбери автомобиль: /cars");
+        return Response.json({ ok: true });
+      }
+      await saveCarFact(activeCar.id, normalizedKey, value);
+      await sendMessage(chatId, `Запомнил в профиле автомобиля: ${rawKey} — ${value}`);
+    } else {
+      await saveFact(chatId, normalizedKey, value);
+      await sendMessage(chatId, `Запомнил в общей памяти: ${rawKey} — ${value}`);
     }
-
-    await saveCarFact(
-      activeCar.id,
-      normalizedKey,
-      value
-    );
-
-    await sendMessage(
-      chatId,
-      `Запомнил: ${rawKey} — ${value}`
-    );
 
     return Response.json({ ok: true });
   }
@@ -1771,25 +1632,48 @@ export async function POST(req: Request) {
         .replace(/[^a-zа-яё0-9]+/gi, "_")
         .replace(/^_+|_+$/g, "");
 
-    const activeCar = await getActiveCar(chatId);
+    const carFactKeys = new Set([
+      "car_make", "car_model", "car_year", "generation", "drive", "side",
+      "engine", "vin", "mileage", "license_plate", "transmission",
+      "dtc_codes", "current_problem", "repair_history", "parts",
+      "repair_cost", "service_status"
+    ]);
     const supabase = getSupabase();
 
-    if (!supabase || !activeCar) {
-      await sendMessage(chatId, "Сначала выбери автомобиль: /cars");
+    if (!supabase) {
+      await sendMessage(chatId, "Не удалось открыть память.");
       return Response.json({ ok: true });
     }
 
-    const { error } = await supabase
-      .from("car_facts")
-      .delete()
-      .eq("car_id", activeCar.id)
-      .eq("fact_key", normalizedKey);
-
-    if (error) {
-      console.error("delete car fact error:", error);
-      await sendMessage(chatId, "Не получилось удалить факт автомобиля.");
+    if (carFactKeys.has(normalizedKey)) {
+      const activeCar = await getActiveCar(chatId);
+      if (!activeCar) {
+        await sendMessage(chatId, "Для автомобильного факта сначала выбери автомобиль: /cars");
+        return Response.json({ ok: true });
+      }
+      const { error } = await supabase
+        .from("car_facts")
+        .delete()
+        .eq("car_id", activeCar.id)
+        .eq("fact_key", normalizedKey);
+      if (error) {
+        console.error("delete car fact error:", error);
+        await sendMessage(chatId, "Не получилось удалить факт автомобиля.");
+      } else {
+        await sendMessage(chatId, `Удалил из профиля автомобиля: ${rawKey}`);
+      }
     } else {
-      await sendMessage(chatId, `Удалил из профиля автомобиля: ${rawKey}`);
+      const { error } = await supabase
+        .from("telegram_facts")
+        .delete()
+        .eq("chat_id", chatId)
+        .eq("fact_key", normalizedKey);
+      if (error) {
+        console.error("delete global fact error:", error);
+        await sendMessage(chatId, "Не получилось удалить факт из общей памяти.");
+      } else {
+        await sendMessage(chatId, `Удалил из общей памяти: ${rawKey}`);
+      }
     }
 
     return Response.json({ ok: true });
@@ -2069,8 +1953,6 @@ export async function POST(req: Request) {
       return Response.json({ ok: true });
     }
 
-    const memory: any[] = [];
-
     const diagnosticCar = await getActiveCar(chatId);
     const vehicleContextEnabled = Boolean(diagnosticCar) && !isDroneRequest(text);
 
@@ -2138,9 +2020,7 @@ export async function POST(req: Request) {
       }
     }
 
-    let factsText = vehicleContextEnabled
-      ? "Активный автомобиль выбран."
-      : "Автомобильный контекст для этого запроса не используется.";
+    let factsText = "";
 
     if (vehicleContextEnabled && diagnosticCar) {
       const carFacts = await getCarFacts(diagnosticCar.id);
@@ -2537,6 +2417,7 @@ export async function POST(req: Request) {
     if (
       vehicleContextEnabled &&
       diagnosticCar &&
+      cleanTelegramText(answer).length <= 950 &&
       shouldGenerateDiagnosticImage(text, answer)
     ) {
       try {
