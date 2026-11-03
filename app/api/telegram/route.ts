@@ -35,8 +35,12 @@ async function telegramFileToDataUrl(fileId: string) {
   }
 
   const bytes = Buffer.from(await fileRes.arrayBuffer());
-  const contentType =
-    fileRes.headers.get("content-type") || "application/octet-stream";
+
+  let contentType = fileRes.headers.get("content-type") || "";
+
+  if (!contentType.startsWith("image/")) {
+    contentType = "image/jpeg";
+  }
 
   return {
     dataUrl: `data:${contentType};base64,${bytes.toString("base64")}`,
