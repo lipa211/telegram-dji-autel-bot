@@ -616,26 +616,36 @@ ${assistantText}`,
 
 function cleanTelegramText(text: string) {
   return text
-    // Markdown links: [название](https://...)
-    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, "")
+    // Markdown-ссылки целиком
+    .replace(/\[[^\]]+\]\(https?:\/\/[^\s)]+\)/gi, "")
 
-    // Формат: site.com — https://...
+    // Любые URL
+    .replace(/https?:\/\/[^\s)]+/gi, "")
+    .replace(/www\.[^\s)]+/gi, "")
+
+    // Домены в скобках: (site.com), (static.nhtsa.gov)
     .replace(
-      /[A-Za-z0-9.-]+\.[A-Za-z]{2,}\s*[—-]\s*https?:\/\/[^\s)]+/g,
+      /\(\s*(?:[a-z0-9-]+\.)+[a-z]{2,}\s*\)/gi,
       ""
     )
 
-    // Обычные URL
-    .replace(/https?:\/\/[^\s)]+/g, "")
+    // Обычные домены без скобок
+    .replace(
+      /\b(?:[a-z0-9-]+\.)+(?:com|org|net|gov|edu|io|ru|de|uk|info|co)\b/gi,
+      ""
+    )
 
-    // Домены в скобках: (example.com)
-    .replace(/\(\s*[A-Za-z0-9.-]+\.[A-Za-z]{2,}\s*\)/g, "")
+    // Строки Источник / Источники
+    .replace(/^Источники?:.*$/gim, "")
 
-    // Одиночные домены после удаления URL
-    .replace(/\b[A-Za-z0-9.-]+\.(com|org|net|gov|io|ru|de|uk|info)\b/gi, "")
+    // Остатки пустых скобок
+    .replace(/\(\s*\)/g, "")
 
-    // Лишние пробелы перед знаками препинания
+    // Пробелы перед пунктуацией
     .replace(/\s+([,.!?;:])/g, "$1")
+
+    // Лишние пробелы
+    .replace(/[ \t]{2,}/g, " ")
 
     // Лишние пустые строки
     .replace(/\n{3,}/g, "\n\n")
