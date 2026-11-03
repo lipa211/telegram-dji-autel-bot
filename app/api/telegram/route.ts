@@ -777,6 +777,13 @@ export async function POST(req: Request) {
 
     const response = await openai.responses.create({
       model: await getSelectedModel(chatId),
+      tools: [
+        {
+          type: "web_search",
+          search_context_size: "medium",
+          external_web_access: true,
+        },
+      ],
       instructions: `
 Ты участник технической Telegram-группы по DJI, Mavic, Matrice и Autel.
 
