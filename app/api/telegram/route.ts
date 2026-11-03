@@ -3,40 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 
 
 
-// ============================================================
-// TELEGRAM UPDATE DEDUPLICATION
-// Один update_id должен обрабатываться только один раз.
-// В памяти держим последние update_id как быструю защиту.
-// ============================================================
 
-const telegramUpdateCache =
-  ((globalThis as any).__telegramUpdateCache ??=
-    new Map<number, number>()) as Map<number, number>;
-
-function claimTelegramUpdate(updateId: unknown): boolean {
-  const id = Number(updateId);
-
-  if (!Number.isFinite(id)) {
-    return true;
-  }
-
-  const now = Date.now();
-  const ttl = 10 * 60 * 1000;
-
-  for (const [storedId, timestamp] of telegramUpdateCache) {
-    if (now - timestamp > ttl) {
-      telegramUpdateCache.delete(storedId);
-    }
-  }
-
-  if (telegramUpdateCache.has(id)) {
-    console.log("Duplicate Telegram update ignored:", id);
-    return false;
-  }
-
-  telegramUpdateCache.set(id, now);
-  return true;
-}
 
 function getSupabase() {
   const url = process.env.SUPABASE_URL;
@@ -233,6 +200,9 @@ async function extractFacts(
 car_make — марка автомобиля
 car_model — модель
 car_year — год выпуска
+generation — поколение / кузов / код кузова, только если пользователь указал явно
+drive — тип привода: 2WD / 4WD / передний / полный, только если пользователь указал явно
+side — сторона ремонта: передняя/задняя + левая/правая, только если пользователь указал явно
 engine — двигатель, объём, топливо
 vin — VIN
 mileage — пробег
@@ -702,15 +672,29 @@ function cleanTelegramText(text: string) {
 
 async function sendMessage(chatId: number, text: string) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
+  if (!token) {
+    console.error("sendMessage: TELEGRAM_BOT_TOKEN is missing");
+    return false;
+  }
 
-  await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+  const cleaned = cleanTelegramText(text);
+  if (!cleaned) return false;
+
+  const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       chat_id: chatId,
-      text: cleanTelegramText(text),
+      text: cleaned,
     }),
   });
+
+  if (!response.ok) {
+    console.error("sendMessage error:", await response.text());
+    return false;
+  }
+
+  return true;
 }
 
 
@@ -770,85 +754,11 @@ function getVisualGuideForCase(
 
 
 
-function isEngineClarificationMode(text: string, answer: string = "") {
-  const value = `${text} ${answer}`.toLowerCase();
-
-  const vehicleKnown =
-    (
-      value.includes("km") ||
-      value.includes("sl") ||
-      value.includes("sportage ii") ||
-      value.includes("sportage 2")
-    ) &&
-    (
-      value.includes("2wd") ||
-      value.includes("4wd") ||
-      value.includes("передний привод") ||
-      value.includes("полный привод")
-    );
-
-  const engineUnknown =
-    value.includes("объём двигателя пока не уточнён") ||
-    value.includes("двигатель пока не уточнён") ||
-    value.includes("2.0 или 2.7") ||
-    value.includes("какой объём двигателя");
-
-  return vehicleKnown && engineUnknown;
-}
-
-function isVehicleIdentificationMode(
-  text: string,
-  answer: string = ""
-) {
-  const userText = text.toLowerCase();
-  const modelText = answer.toLowerCase();
-
-  const confirmedFromContext =
-    (
-      modelText.includes("по данным чата") ||
-      modelText.includes("по сохранённым данным") ||
-      modelText.includes("в профиле автомобиля")
-    ) &&
-    (
-      modelText.includes("2wd") ||
-      modelText.includes("4wd") ||
-      modelText.includes("передний привод") ||
-      modelText.includes("полный привод")
-    ) &&
-    (
-      modelText.includes("km") ||
-      modelText.includes("sl") ||
-      modelText.includes("поколение")
-    );
-
-  if (confirmedFromContext) return false;
-
-  return (
-    userText.includes("кузов и привод не знаю") ||
-    userText.includes("кузов не знаю") ||
-    userText.includes("привод не знаю") ||
-    userText.includes("поколение не знаю") ||
-    userText.includes("версию не знаю") ||
-    userText.includes("комплектацию не знаю") ||
-    userText.includes("не знаю какой привод") ||
-    userText.includes("не знаю кузов")
-  );
-}
-
-function cleanIdentificationReply(text: string) {
-  return text
-    // Убираем упоминания источников
-    .replace(/[^.!?\n]*(руководств|каталог|документац|источник|сервисн(?:ая|ой|ую) процедур)[^.!?\n]*[.!?]?/gi, "")
-
-    // Убираем действия разборки при неизвестной версии
-    .replace(/[^.!?\n]*(снять колесо|снимают колесо|снять тормоз|снимают тормоз|освободить датчик|освобождают датчик|снять ступиц|снимают ступиц|открутить|выпрессовать|снять кулак)[^.!?\n]*[.!?]?/gi, "")
-
-    // Убираем остаточные фразы
-    .replace(/\n{3,}/g, "\n\n")
-    .replace(/[ \t]{2,}/g, " ")
-    .trim();
-}
-
+type VehicleSideCode =
+  | "front_left"
+  | "front_right"
+  | "rear_left"
+  | "rear_right";
 
 type VehicleRepairState = {
   mode: "UNKNOWN" | "PARTIAL" | "CONFIRMED";
@@ -857,6 +767,7 @@ type VehicleRepairState = {
   drive?: string;
   engine?: string;
   side?: string;
+  sideCode?: VehicleSideCode;
   missing: string[];
 };
 
@@ -866,252 +777,169 @@ function pickFact(
 ): string | undefined {
   for (const key of keys) {
     const value = facts[key];
-    if (typeof value === "string" && value.trim()) {
-      return value.trim();
-    }
+    if (typeof value === "string" && value.trim()) return value.trim();
   }
   return undefined;
+}
+
+function parseExplicitVehicleFacts(text: string) {
+  const lower = text.toLowerCase();
+  const result: Record<string, string> = {};
+
+  const generationMatch = text.match(/\b(KM|SL)\b/i);
+  if (generationMatch) result.generation = generationMatch[1].toUpperCase();
+
+  if (/\b2wd\b/i.test(text) || lower.includes("передний привод")) {
+    result.drive = "2WD";
+  } else if (/\b4wd\b/i.test(text) || lower.includes("полный привод")) {
+    result.drive = "4WD";
+  }
+
+  const engineMatch = text.match(/(?:двигател[ья]?|мотор|объ[её]м)[^\d]{0,12}(1[.,]6|2[.,]0|2[.,]4|2[.,]7|3[.,]3)|\b(1[.,]6|2[.,]0|2[.,]4|2[.,]7|3[.,]3)\s*(?:л|литр)/i);
+  const engine = engineMatch?.[1] || engineMatch?.[2];
+  if (engine) result.engine = engine.replace(",", ".");
+
+  const hasRear = /задн\w*/i.test(text);
+  const hasFront = /передн\w*/i.test(text);
+  const hasRight = /прав\w*/i.test(text);
+  const hasLeft = /лев\w*/i.test(text);
+
+  if (hasRear && hasRight) {
+    result.side = "задняя правая";
+    result.sideCode = "rear_right";
+  } else if (hasRear && hasLeft) {
+    result.side = "задняя левая";
+    result.sideCode = "rear_left";
+  } else if (hasFront && hasRight) {
+    result.side = "передняя правая";
+    result.sideCode = "front_right";
+  } else if (hasFront && hasLeft) {
+    result.side = "передняя левая";
+    result.sideCode = "front_left";
+  }
+
+  return result;
 }
 
 function deriveVehicleRepairState(
   facts: Record<string, string>,
   userText: string
 ): VehicleRepairState {
-  const allValues = Object.values(facts).join(" ");
-  const combined = `${allValues} ${userText}`.toLowerCase();
+  // Current user message always overrides stale memory.
+  const explicit = parseExplicitVehicleFacts(userText);
 
-  const model = pickFact(facts, [
-    "car_model",
-    "vehicle_model",
-    "model",
-    "diagnostic_car_model",
-  ]);
+  const model = pickFact(facts, ["car_model", "vehicle_model", "model"]);
+  const generation = explicit.generation || pickFact(facts, ["generation", "body_code", "body", "car_generation"]);
+  const drive = explicit.drive || pickFact(facts, ["drive", "drive_type", "drivetrain", "car_drive"]);
+  const engine = explicit.engine || pickFact(facts, ["engine", "engine_volume", "engine_displacement", "motor"]);
+  const side = explicit.side || pickFact(facts, ["side", "repair_side", "wheel_side"]);
 
-  let generation = pickFact(facts, [
-    "generation",
-    "body",
-    "body_code",
-    "chassis",
-    "platform",
-    "car_generation",
-  ]);
-
-  let drive = pickFact(facts, [
-    "drive",
-    "drive_type",
-    "drivetrain",
-    "car_drive",
-  ]);
-
-  let engine = pickFact(facts, [
-    "engine",
-    "engine_volume",
-    "engine_displacement",
-    "motor",
-    "engine_type",
-  ]);
-
-  let side = pickFact(facts, [
-    "side",
-    "repair_side",
-    "wheel_side",
-  ]);
-
-  // Подхватываем известные значения даже если они лежат
-  // в другом сохранённом поле.
-  if (!generation) {
-    if (/\bkm\b/i.test(combined)) generation = "KM";
-    else if (/\bsl\b/i.test(combined)) generation = "SL";
-  }
-
-  if (!drive) {
-    if (/\b2wd\b/i.test(combined) || combined.includes("передний привод")) {
-      drive = "2WD";
-    } else if (
-      /\b4wd\b/i.test(combined) ||
-      combined.includes("полный привод")
-    ) {
-      drive = "4WD";
-    }
-  }
-
-  if (!engine) {
-    const engineMatch = combined.match(
-      /\b(1[.,]6|2[.,]0|2[.,]4|2[.,]7|3[.,]3)\b/
-    );
-    if (engineMatch) {
-      engine = engineMatch[1].replace(",", ".");
-    }
-  }
-
-  if (!side) {
-    if (combined.includes("задн") && combined.includes("прав")) {
-      side = "задняя правая";
-    } else if (combined.includes("задн") && combined.includes("лев")) {
-      side = "задняя левая";
-    } else if (combined.includes("передн") && combined.includes("прав")) {
-      side = "передняя правая";
-    } else if (combined.includes("передн") && combined.includes("лев")) {
-      side = "передняя левая";
-    }
+  let sideCode = explicit.sideCode as VehicleSideCode | undefined;
+  if (!sideCode && side) {
+    const parsed = parseExplicitVehicleFacts(side);
+    sideCode = parsed.sideCode as VehicleSideCode | undefined;
   }
 
   const missing: string[] = [];
-
   if (!generation) missing.push("поколение / кузов");
   if (!drive) missing.push("привод");
   if (!engine) missing.push("двигатель");
 
-  let mode: VehicleRepairState["mode"];
+  const mode: VehicleRepairState["mode"] =
+    !generation || !drive
+      ? "UNKNOWN"
+      : !engine
+        ? "PARTIAL"
+        : "CONFIRMED";
 
-  if (!generation || !drive) {
-    mode = "UNKNOWN";
-  } else if (!engine) {
-    mode = "PARTIAL";
-  } else {
-    mode = "CONFIRMED";
-  }
-
-  return {
-    mode,
-    model,
-    generation,
-    drive,
-    engine,
-    side,
-    missing,
-  };
+  return { mode, model, generation, drive, engine, side, sideCode, missing };
 }
 
 function vehicleStateHeader(state: VehicleRepairState): string {
-  const confirmed: string[] = [];
-
-  const pushUnique = (value?: string) => {
+  const values: string[] = [];
+  const add = (value?: string) => {
     if (!value) return;
-
-    const normalized = value.trim().toLowerCase();
-
-    const alreadyExists = confirmed.some((item) => {
-      const existing = item.trim().toLowerCase();
-      return (
-        existing === normalized ||
-        existing.includes(normalized) ||
-        normalized.includes(existing)
-      );
-    });
-
-    if (!alreadyExists) {
-      confirmed.push(value.trim());
-    }
+    const normalized = value.toLowerCase().trim();
+    if (!values.some((x) => x.toLowerCase().trim() === normalized)) values.push(value.trim());
   };
 
-  pushUnique(state.model);
-  pushUnique(state.generation);
-  pushUnique(state.drive);
+  add(state.model);
+  add(state.generation);
+  add(state.drive);
+  if (state.engine) add(`двигатель ${state.engine}`);
+  add(state.side);
 
-  if (state.engine) {
-    pushUnique(`двигатель ${state.engine}`);
-  }
-
-  pushUnique(state.side);
-
-  const confirmedText =
-    confirmed.length > 0 ? confirmed.join(", ") : "данные автомобиля";
-
+  const confirmed = values.length ? values.join(", ") : "данные автомобиля";
   if (state.mode === "UNKNOWN") {
-    return `Статус: версия автомобиля не определена.
-Подтверждено: ${confirmedText}.
-Требует уточнения: ${state.missing.join(", ")}.`;
+    return `Статус: версия автомобиля не определена.\nПодтверждено: ${confirmed}.\nТребует уточнения: ${state.missing.join(", ")}.`;
   }
-
   if (state.mode === "PARTIAL") {
-    return `Подтверждено: ${confirmedText}.
-Требует уточнения: ${state.missing.join(", ")}.`;
+    return `Подтверждено: ${confirmed}.\nТребует уточнения: ${state.missing.join(", ")}.`;
   }
-
-  return `Подтверждено: ${confirmedText}.`;
+  return `Подтверждено: ${confirmed}.`;
 }
 
+function cleanRepairAnswerForState(text: string, state: VehicleRepairState): string {
+  let result = text.trim();
 
-function finalizeSingleReply(
-  answer: string,
-  state: VehicleRepairState
-): string {
-  let result = answer.trim();
-
-  // Убираем повторяющиеся служебные заголовки
+  // Remove model-generated status headers; the application adds one canonical header.
   result = result
-    .replace(/^(Подтверждено:.*\n?)+/gim, "")
-    .replace(/^(Требует уточнения:.*\n?)+/gim, "")
-    .replace(/^(Статус:.*\n?)+/gim, "")
-    .trim();
-
-  const header = vehicleStateHeader(state);
-
-  // Всегда только один итоговый блок
-  return `${header}
-
-${result}`
+    .replace(/^\s*(?:Статус|Подтверждено|Требует уточнения):.*$/gim, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
-}
 
-function cleanRepairAnswerForState(
-  text: string,
-  state: VehicleRepairState
-): string {
-  let result = text;
-
-  // Уже известные параметры не спрашиваем повторно.
+  // Do not let the assistant re-ask facts that are already structurally known.
   if (state.generation) {
-    result = result
-      .replace(
-        /[^.!?\n]*(уточнить|определить|проверить)[^.!?\n]*(поколен|кузов)[^.!?\n]*[.!?]?/gi,
-        ""
-      );
+    result = result.replace(/^[^\n]*(?:уточн|определ|проверь)[^\n]*(?:поколен|кузов)[^\n]*$/gim, "");
   }
-
   if (state.drive) {
-    result = result
-      .replace(
-        /[^.!?\n]*(уточнить|определить|проверить)[^.!?\n]*(2wd|4wd|привод)[^.!?\n]*[.!?]?/gi,
-        ""
-      );
+    result = result.replace(/^[^\n]*(?:уточн|определ|проверь)[^\n]*(?:2wd|4wd|привод)[^\n]*$/gim, "");
   }
 
-  // Если неизвестен двигатель — не выдаём числовые моменты
-  // затяжки как готовую норму.
   if (!state.engine) {
     result = result
       .split("\n")
-      .filter(
-        (line) =>
-          !/\b\d{2,4}\s*[–—-]\s*\d{2,4}\s*(н[·.\s]?м|nm)\b/i.test(line) &&
-          !/\b\d{2,4}\s*(н[·.\s]?м|nm)\b/i.test(line)
-      )
+      .filter((line) => !/\b\d{2,4}\s*(?:[–—-]\s*\d{2,4}\s*)?(?:н[·.\s]?м|nm)\b/i.test(line))
       .join("\n");
-
-    result = result.replace(
-      /[^.!?\n]*(момент(?:ы)? затяжки)[^.!?\n]*[.!?]?/gi,
-      ""
-    );
   }
 
-  return result
-    .replace(/\n{3,}/g, "\n\n")
-    .replace(/[ \t]{2,}/g, " ")
-    .trim();
+  return result.replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function composeRepairAnswer(answer: string, state: VehicleRepairState): string {
+  const cleaned = cleanRepairAnswerForState(answer, state);
+  const header = vehicleStateHeader(state);
+
+  if (state.mode === "UNKNOWN") {
+    return `${header}\n\nДля точной инструкции сначала нужно определить недостающие данные.\n\nДостаточно прислать фото нужной стороны/узла и указать поколение или кузов и привод, если они известны. До подтверждения версии не применяй точную разборку, каталожные номера и моменты затяжки.`;
+  }
+
+  if (state.mode === "PARTIAL") {
+    return `${header}\n\n${cleaned}\n\nТочные моменты затяжки, номер детали и отличия по двигателю нужно сверить после уточнения двигателя или по VIN.`
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+  }
+
+  return `${header}\n\n${cleaned}`.replace(/\n{3,}/g, "\n\n").trim();
 }
 
 async function generateDiagnosticImage(
   openai: any,
   carName: string,
   problem: string,
-  diagnosis: string
+  diagnosis: string,
+  state: VehicleRepairState
 ) {
   try {
-    const identificationMode =
-      isVehicleIdentificationMode(problem, diagnosis);
+    const sideInstruction = state.sideCode
+      ? `TARGET_SIDE_CODE: ${state.sideCode.toUpperCase()}. Это сторона автомобиля по ходу движения. Не зеркаль и не меняй её.`
+      : "Сторона автомобиля не подтверждена: не выбирай левую или правую сторону самостоятельно.";
+
+    const modeRules = state.mode === "UNKNOWN"
+      ? `РЕЖИМ: ИДЕНТИФИКАЦИЯ. Не показывай демонтаж, инструменты, снятие колеса, ступицы, суппорта, диска или подшипника. Покажи только нужную область, что сфотографировать и какие данные уточнить.`
+      : state.mode === "PARTIAL"
+        ? `РЕЖИМ: ЧАСТИЧНО ПОДТВЕРЖДЕНО. Поколение/кузов и привод считаются известными. Не проси их повторно и не показывай другой привод как альтернативу. Можно показать общий порядок ремонта, но без неподтверждённых моментов затяжки, каталожных номеров и отличий по двигателю.`
+        : `РЕЖИМ: ПОДТВЕРЖДЕНО. Показывай только подтверждённую модель/кузов/привод/двигатель/сторону. Можно показывать последовательность ремонта, если она описана в диагностическом тексте. Не добавляй неподтверждённые моменты затяжки, номера деталей или крепёж.`;
 
     const result = await openai.images.generate({
       model: "gpt-image-2.5-flare",
@@ -1119,224 +947,33 @@ async function generateDiagnosticImage(
       prompt: `
 Создай вертикальную техническую иллюстрацию для автомеханика.
 
-Автомобиль:
-${carName}
+Автомобиль: ${carName}
+Проблема: ${problem}
+Диагностический текст: ${diagnosis}
 
-Неисправность:
-${problem}
+${modeRules}
+${sideInstruction}
 
-Диагностический вывод:
-${diagnosis}
-
-СИНХРОНИЗАЦИЯ СО СТАТУСОМ АВТОМОБИЛЯ:
-
-Если в диагностическом выводе есть:
-"Статус: версия автомобиля не определена"
-→ изображение только для идентификации.
-→ не показывать разборку и ремонт.
-
-Если есть:
-"Подтверждено:" и "Требует уточнения: двигатель"
-→ кузов и привод УЖЕ ИЗВЕСТНЫ.
-→ НЕ писать "уточнить кузов".
-→ НЕ писать "уточнить поколение".
-→ НЕ писать "проверить 2WD/4WD".
-→ НЕ показывать другой привод как альтернативную основную схему.
-→ показывать ремонтный узел именно подтверждённой версии.
-→ отдельный небольшой блок:
-  "Требует уточнения: двигатель".
-→ не показывать неподтверждённые моменты затяжки цифрами.
-
-Если есть только:
-"Подтверждено:"
-и нет "Требует уточнения"
-→ это полностью подтверждённая версия.
-→ изображение должно быть полноценной ремонтной схемой именно этой версии.
-→ не возвращаться к идентификации автомобиля.
-→ НЕ писать "Требует уточнения: двигатель".
-→ НЕ писать "уточнить кузов", "уточнить поколение", "проверить привод", "2WD или 4WD".
-→ НЕ показывать альтернативную версию автомобиля как основной вариант.
-→ использовать только подтверждённые модель / кузов / привод / двигатель / сторону.
-→ если двигатель подтверждён как 2.0, не писать, что двигатель неизвестен.
-→ если привод подтверждён как 2WD, не показывать 4WD как равнозначный вариант.
-→ заголовок изображения должен отражать подтверждённую версию автомобиля.
-
-НИКОГДА не противоречь разделам
-"Подтверждено" и "Требует уточнения".
-
-${identificationMode ? `
-КРИТИЧЕСКИЙ РЕЖИМ: ИДЕНТИФИКАЦИЯ АВТОМОБИЛЯ.
-
-Версия автомобиля НЕ подтверждена.
-
-ЗАПРЕЩЕНО:
-- показывать снятие колеса;
-- показывать демонтаж тормозного узла;
-- показывать снятие ступицы;
-- показывать откручивание крепежа;
-- показывать мультиметр или измерения;
-- показывать пошаговый ремонт;
-- показывать инструменты для демонтажа.
-
-ПОКАЗЫВАЙ ТОЛЬКО:
-1. Правильную сторону автомобиля.
-2. Общую область нужного узла.
-3. Как визуально отличить 2WD от 4WD.
-4. Какое фото нужно сделать.
-5. Какие данные автомобиля нужно уточнить.
-6. Надпись: "После подтверждения версии — точная схема ремонта".
-
-Это схема ИДЕНТИФИКАЦИИ, а не инструкция по ремонту.
-` : ""}
-
-Требования:
-- стиль сервисной технической инструкции;
-- реалистичные автомобильные узлы;
-- крупные стрелки;
-- короткие подписи на русском языке;
-- показать порядок проверки, а не просто красивую картинку;
-- если нужно измерение мультиметром, показать только общий принцип измерения.
-
-КРИТИЧЕСКИ ВАЖНО:
-- используй только технические сведения, которые прямо указаны в переданной диагностике;
-- не придумывай точное расположение узла;
-- не придумывай расположение усилителя;
-- не придумывай расположение блока предохранителей;
-- не придумывай номер или обозначение предохранителя;
-- не придумывай реле;
-- не придумывай номер контакта;
-- не придумывай распиновку;
-- не придумывай цвет провода;
-- не изображай конкретный разъём как заводской, если это не подтверждено;
-- не изображай непроверенную деталь как точно неисправную.
-
-Если точное расположение не подтверждено:
-- показывай общий принцип проверки;
-- используй нейтральную схему автомобиля или узла;
-- обязательно добавляй подпись:
-  "Точное расположение зависит от комплектации";
-- не создавай впечатление, что показанное место является точным заводским расположением.
-
-Если в диагностике прямо указано подтверждённое расположение:
-- можно показать его;
-- не добавляй от себя дополнительные технические детали.
-
-Цель картинки:
-помочь мастеру понять порядок действий и точки проверки,
-не вводя его в заблуждение.
-
-СИНХРОНИЗАЦИЯ С ТЕКСТОМ:
-- изображение должно полностью соответствовать переданной диагностике;
-
-ОРИЕНТАЦИЯ СТОРОН АВТОМОБИЛЯ:
-- "право" и "лево" всегда определяй относительно автомобиля по ходу движения, как если человек сидит в машине и смотрит вперёд;
-- никогда не определяй правую/левую сторону по правой или левой стороне самого изображения;
-- "задний правый" означает задний правый угол автомобиля по его собственной системе координат;
-- "задний левый" означает задний левый угол автомобиля по его собственной системе координат;
-- если перспектива может запутать сторону, используй вид сверху или сзади;
-- при показе стороны обязательно добавляй понятные метки "ЛЕВО" и "ПРАВО";
-- не используй подписи "со стороны пассажира" или "со стороны водителя", если расположение руля не подтверждено;
-- если пользователь указал конкретную сторону, не меняй её ни в тексте, ни на изображении;
-
-- изображение должно показывать именно текущую операцию ремонта или проверки;
-- если ответ описывает снятие, установку, разборку или замену детали, визуально покажи последовательность этих действий;
-- не добавляй на изображение детали или операции, которых нет в тексте;
-- не показывай числовые моменты затяжки, если они не подтверждены именно для текущей версии И отдельно не помечены как VERIFIED;
-- сам факт, что число присутствует в тексте ответа модели, НЕ делает его VERIFIED;
-- если нет отдельного подтверждения VERIFIED, вместо цифры пиши:
-  "Момент затяжки — сверить по сервисным данным";
-- не создавай таблицу моментов затяжки из неподтверждённых чисел;
-- если момент требует сверки, вместо цифры напиши:
-  "Момент затяжки — сверить по версии / VIN";
-- не показывай неподтверждённый номер детали как точный;
-- подтверждённые параметры и параметры "требует сверки" визуально разделяй;
-- на изображении стороны автомобиля определяй только по ходу движения;
-- если указана "задняя правая", выделяй именно заднюю правую сторону автомобиля;
-- не зеркаль обозначения "лево" и "право" из-за ракурса;
-- при виде сзади правая сторона автомобиля может находиться слева или справа на экране в зависимости от ракурса — ориентируйся по автомобилю, а не по картинке;
-- добавляй небольшую ориентационную подпись:
-  "ПЕРЕД АВТОМОБИЛЯ ↑"
-  "ЛЕВО ←   → ПРАВО";
-
-- если кузов и привод уже подтверждены, НЕ рисуй блоки "уточнить поколение", "проверить 2WD/4WD";
-- если неизвестен только двигатель, покажи конкретный подтверждённый кузов/привод и отдельный блок:
-  "Требует уточнения: двигатель";
-- в таком режиме схема должна быть ремонтной, а не идентификационной;
-
-
-- если точный вариант конструкции не подтверждён, покажи общую схему и явно укажи необходимость уточнить комплектацию;
-
-- не показывай процедуру, которой нет в диагностическом тексте;
-- не смешивай разные поколения, кузова или варианты узла в одной схеме;
-- не показывай одновременно ступицу в сборе и запрессовку отдельного подшипника как одну процедуру;
-- если диагностика говорит, что точная версия автомобиля не подтверждена, НЕ рисуй конкретную конструкцию узла;
-- в таком случае НЕ создавай пошаговую схему разборки;
-- НЕ показывай демонтаж деталей вообще;
-- НЕ показывай мультиметр, контрольную лампу или другие измерительные приборы;
-- НЕ предлагай измерять ABS, питание, сопротивление или сигналы на этапе идентификации версии;
-- датчик ABS можно только обозначить на общей схеме как ориентир, без проверки и измерений;
-
-- НЕ показывай снятое колесо как этап ремонта;
-- НЕ показывай снятие суппорта, диска, ступицы, кулака или подшипника;
-- НЕ показывай инструменты, откручивание болтов, гайки, пресс или выбивание;
-- показывай только:
-  1. нужную сторону автомобиля;
-  2. область узла;
-  3. общий вид 2WD / 4WD;
-  4. что сфотографировать;
-  5. какие данные нужны;
-  6. подпись: "После подтверждения версии — точная схема ремонта";
-
-- не показывай снятие ступицы, откручивание крепежа, демонтаж кулака или выпрессовку подшипника;
-- показывай только:
-  1. нужную сторону автомобиля;
-  2. область узла;
-  3. отличие 2WD/4WD на общем уровне;
-  4. что нужно уточнить;
-  5. переход к точной схеме после подтверждения версии;
-
-- вместо ремонта создай схему идентификации версии автомобиля;
-- покажи только:
-  1. нужную сторону автомобиля;
-  2. что нужно сфотографировать;
-  3. какие данные уточнить;
-  4. VIN / поколение / привод;
-  5. после подтверждения — переход к точной схеме ремонта;
-- не показывай, как снимается ступица, подшипник, стекло, усилитель или другой узел, пока его конструкция не подтверждена;
-- не показывай точный крепёж, гайки, разъёмы или последовательность демонтажа;
-
-- в таком случае сделай только общую схему:
-  автомобиль → нужная сторона → что проверить → что уточнить;
-- крупно напиши:
-  "Сначала уточнить поколение / кузов / привод";
-- если точная конструкция подтверждена в диагностике, показывай только её;
-- никакая деталь на изображении не должна выглядеть как точное фото автомобиля пользователя, если это не подтверждено;
-- изображение является наглядной технической схемой, а не доказательством точной комплектации;
-- не рисуй URL, домены, названия сайтов, QR-коды, подписи "источник", "source", "catalog", "manual";
-- не вставляй логотипы сайтов или водяные знаки;
-- не указывай названия интернет-ресурсов;
-- не добавляй ссылки в текст изображения;
-- если кузов, поколение или комплектация не подтверждены, не изображай конкретную машину как точную версию;
-- не подписывай изображение "старый кузов", "новый кузов", "KM", "SL", "2WD" или "4WD", пока это не подтверждено;
-- заголовок в таком случае делай нейтральным, например:
-  "Kia Sportage 2010 — общая схема проверки / ремонта";
-
-- в таком случае используй нейтральную техническую иллюстрацию и крупную подпись:
-  "Кузов / поколение необходимо уточнить";
-
-
-
-Максимум 4-5 ключевых шагов.
+ОБЩИЕ ПРАВИЛА:
+- максимум 4-5 ключевых шагов;
+- изображение строго соответствует диагностическому тексту;
+- не смешивай разные поколения, кузова, 2WD/4WD или варианты узла;
+- не изображай предположение как подтверждённую конструкцию;
+- не придумывай номера предохранителей, реле, контактов, распиновку, цвет проводов, каталожные номера или точный крепёж;
+- числовой момент затяжки показывай только если в тексте он явно помечен VERIFIED; иначе напиши: "Момент затяжки — сверить по сервисным данным / VIN";
+- право/лево всегда определяются по ходу движения автомобиля;
+- добавь маленькую ориентацию: "ПЕРЕД АВТОМОБИЛЯ ↑" и "ЛЕВО ←   → ПРАВО";
+- не используй "водительская/пассажирская сторона", если расположение руля не подтверждено;
+- не рисуй URL, QR-коды, сайты, водяные знаки, слова source/catalog/manual;
+- называй результат только наглядной схемой/иллюстрацией, не официальной сервисной схемой.
 `,
     });
 
     const b64 = result.data?.[0]?.b64_json;
-
     if (!b64) {
       console.error("Image generation returned no image");
       return null;
     }
-
     return Buffer.from(b64, "base64");
   } catch (error) {
     console.error("generateDiagnosticImage error:", error);
@@ -1344,65 +981,26 @@ ${identificationMode ? `
   }
 }
 
-
 function shouldGenerateDiagnosticImage(
   text: string,
-  answer: string
+  _answer: string
 ) {
-  const value = `${text} ${answer}`.toLowerCase();
-
-  const visualWords = [
+  const value = text.toLowerCase();
+  const explicitVisualIntent = [
+    "покажи",
+    "наглядно",
+    "схема",
+    "нарисуй",
     "где находится",
-    "куда лезть",
     "куда смотреть",
-    "снять",
-    "разобрать",
-    "разъём",
-    "разъем",
-    "предохранител",
-    "реле",
-    "провод",
-    "питание",
-    "масса",
-    "мультиметр",
-    "усилител",
-    "магнитол",
-    "датчик",
-    "стартер",
-    "генератор",
-    "насос",
-    "свеч",
-    "термостат",
-    "ремень",
-    "фильтр",
-    "звук проп",
-    "замена",
-    "заменить",
-    "ремонт",
-    "ремонтировать",
-    "разборка",
-    "сборка",
-    "установить",
-    "поменять",
-    "как меняют",
+    "куда лезть",
     "как снять",
     "как установить",
-    "покажи",
-    "фото",
-    "схема",
-    "наглядно",
-    "лобовое стекло",
-    "стекло",
-    "ступица",
-    "подшипник",
-    "тормоз",
-    "суппорт",
-    "подвеска",
+    "как заменить",
+    "покажи фото",
+    "покажи на фото",
   ];
-
-  return visualWords.some((word) =>
-    value.includes(word)
-  );
+  return explicitVisualIntent.some((phrase) => value.includes(phrase));
 }
 
 async function sendPhotoBuffer(
@@ -1558,11 +1156,6 @@ export async function POST(req: Request) {
 
   const update = await req.json();
 
-  if (!claimTelegramUpdate(update?.update_id)) {
-    return Response.json({ ok: true, duplicate: true });
-  }
-
-
   // Защита от повторной доставки одного Telegram update.
   // Telegram может повторить webhook, пока генерируется длинный ответ/изображение.
   const telegramUpdateId = Number(update?.update_id);
@@ -1616,7 +1209,7 @@ export async function POST(req: Request) {
     })
   );
 
-  const message = update?.message;
+  const message = update?.message ?? update?.edited_message;
 
   if (!message?.chat?.id) {
     return Response.json({ ok: true });
@@ -2059,6 +1652,11 @@ export async function POST(req: Request) {
     "год выпуска": "car_year",
     "двигатель": "engine",
     "мотор": "engine",
+    "поколение": "generation",
+    "кузов": "generation",
+    "код кузова": "generation",
+    "привод": "drive",
+    "сторона": "side",
     "vin": "vin",
     "вин": "vin",
     "пробег": "mileage",
@@ -2272,7 +1870,10 @@ export async function POST(req: Request) {
       ["car_make", "Марка"],
       ["car_model", "Модель"],
       ["car_year", "Год выпуска"],
+      ["generation", "Поколение / кузов"],
+      ["drive", "Привод"],
       ["engine", "Двигатель"],
+      ["side", "Сторона ремонта"],
       ["transmission", "Коробка"],
       ["mileage", "Пробег"],
       ["vin", "VIN"],
@@ -2440,6 +2041,14 @@ export async function POST(req: Request) {
 
     const extractedFacts = await extractFacts(openai, text);
 
+    const explicitVehicleFacts = parseExplicitVehicleFacts(text);
+    for (const [key, value] of Object.entries(explicitVehicleFacts)) {
+      if (key === "sideCode") continue;
+      if (!extractedFacts.some((item: any) => item?.key?.toLowerCase() === key)) {
+        extractedFacts.push({ key, value });
+      }
+    }
+
     for (const fact of extractedFacts) {
       if (
         fact &&
@@ -2474,12 +2083,12 @@ export async function POST(req: Request) {
               typeof item?.value === "string"
           );
 
-          const savedMileageFacts = await getLongTermFacts(chatId);
+          const eventCar = await getActiveCar(chatId);
+          const savedMileageFacts = eventCar ? await getCarFacts(eventCar.id) : [];
           const savedMileage = savedMileageFacts.find(
             (item: any) => item.fact_key === "mileage"
           )?.fact_value;
 
-          const eventCar = await getActiveCar(chatId);
 
           if (eventCar) {
             await saveServiceEvent(
@@ -2579,7 +2188,7 @@ export async function POST(req: Request) {
           external_web_access: true,
         },
       ],
-      tool_choice: "required",
+      tool_choice: "auto",
       instructions: `
 Ты опытный AI-помощник автосервиса и автомеханика. Помогаешь диагностировать автомобили по симптомам, кодам ошибок, фото, видео и описанию владельца.
 
@@ -2907,42 +2516,7 @@ export async function POST(req: Request) {
     text
   );
 
-  answer = cleanRepairAnswerForState(
-    answer,
-    vehicleState
-  );
-
-  if (vehicleState.mode === "UNKNOWN") {
-    answer = `${vehicleStateHeader(vehicleState)}
-
-Для точной инструкции сначала нужно определить недостающие данные.
-
-Сейчас достаточно:
-1. Прислать фото нужной стороны автомобиля.
-2. По возможности сделать фото снизу.
-3. Уточнить поколение / кузов и привод, если они неизвестны.
-4. VIN можно прислать при наличии — он помогает точнее сверить вариант.
-
-До подтверждения версии точную разборку и моменты затяжки не применяйте.
-
-После определения версии дам подходящую схему ремонта и наглядное сопровождение.`;
-  } else if (vehicleState.mode === "PARTIAL") {
-    answer = `${vehicleStateHeader(vehicleState)}
-
-${answer}
-
-Общую схему ремонта для уже подтверждённых кузова и привода можно использовать.
-Точные моменты затяжки, номер детали и отличия, зависящие от двигателя, нужно уточнить после определения двигателя или сверки по VIN.`;
-  } else {
-    answer = `${vehicleStateHeader(vehicleState)}
-
-${answer}`;
-  }
-
-  answer = finalizeSingleReply(
-    answer,
-    vehicleState
-  );
+  answer = composeRepairAnswer(answer, vehicleState);
 
   if (diagnosticCar && answer) {
       await saveCarMessage(
@@ -2984,14 +2558,11 @@ ${answer}`;
             openai,
             carName,
             text,
-            answer
+            answer,
+            vehicleState
           );
 
         if (diagnosticImage) {
-          const photoCaption =
-            answer.length > 950
-              ? answer.slice(0, 947).trimEnd() + "..."
-              : answer;
 
           pendingDiagnosticImage = diagnosticImage;
 
@@ -3055,28 +2626,17 @@ ${answer}`;
       content: answer,
     });
 
-    if (pendingDiagnosticImage) {
-      // Telegram caption ограничен по длине.
-      // Поэтому ответ для фото заранее держим компактным.
-      const caption =
-        answer.length > 950
-          ? answer.slice(0, 947).trimEnd() + "..."
-          : answer;
-
-      await sendPhotoBuffer(
-        chatId,
-        pendingDiagnosticImage,
-        caption
-      );
+    if (pendingDiagnosticImage && cleanTelegramText(answer).length <= 950) {
+      await sendPhotoBuffer(chatId, pendingDiagnosticImage, answer);
     } else {
+      // Preserve the complete answer rather than silently truncating it.
       await sendMessage(chatId, answer);
     }
   } catch (error: any) {
     console.error(error);
-
     await sendMessage(
       chatId,
-      `Ошибка OpenAI:\n${error?.message || String(error)}`
+      "Не удалось обработать запрос. Повтори сообщение ещё раз."
     );
   }
 
