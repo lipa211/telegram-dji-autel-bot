@@ -1,0 +1,34 @@
+{
+  "name": "telegram-dji-autel-bot",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lipa211/telegram-dji-autel-bot.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/lipa211/telegram-dji-autel-bot/issues"
+  },
+  "homepage": "https://github.com/lipa211/telegram-dji-autel-bot#readme",
+  "dependencies": {
+    "next": "^16.4.4",
+    "openai": "^7.47.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.6",
+    "@types/react": "19.3.0",
+    "typescript": "7.0.2"
+  }
+}
