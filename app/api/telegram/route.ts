@@ -772,6 +772,45 @@ ${diagnosis}
   }
 }
 
+
+function shouldGenerateDiagnosticImage(
+  text: string,
+  answer: string
+) {
+  const value = `${text} ${answer}`.toLowerCase();
+
+  const visualWords = [
+    "где находится",
+    "куда лезть",
+    "куда смотреть",
+    "снять",
+    "разобрать",
+    "разъём",
+    "разъем",
+    "предохранител",
+    "реле",
+    "провод",
+    "питание",
+    "масса",
+    "мультиметр",
+    "усилител",
+    "магнитол",
+    "датчик",
+    "стартер",
+    "генератор",
+    "насос",
+    "свеч",
+    "термостат",
+    "ремень",
+    "фильтр",
+    "звук проп",
+  ];
+
+  return visualWords.some((word) =>
+    value.includes(word)
+  );
+}
+
 async function sendPhotoBuffer(
   chatId: number,
   imageBuffer: Buffer,
@@ -793,7 +832,7 @@ async function sendPhotoBuffer(
 
   form.append(
     "photo",
-    new Blob([imageBuffer], {
+    new Blob([new Uint8Array(imageBuffer)], {
       type: "image/png",
     }),
     "diagnostic.png"
