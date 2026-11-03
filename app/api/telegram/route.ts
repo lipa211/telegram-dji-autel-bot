@@ -250,6 +250,55 @@ export async function POST(req: Request) {
   const chatId = message.chat.id;
   const text = message.text ?? message.caption ?? "";
 
+  if (text === "/profile") {
+    const facts = await getLongTermFacts(chatId);
+
+    if (!facts.length) {
+      await sendMessage(chatId, "Пока профиль пуст.");
+      return Response.json({ ok: true });
+    }
+
+    const map = Object.fromEntries(
+      facts.map((f: any) => [f.fact_key, f.fact_value])
+    );
+
+    const lines: string[] = [];
+
+    if (map.drone_model) {
+      lines.push(`Дрон: ${map.drone_model}`);
+    }
+
+    const batteryParts: string[] = [];
+
+    if (map.additional_battery_configuration) {
+      batteryParts.push(map.additional_battery_configuration);
+    }
+
+    if (map.additional_battery_capacity) {
+      batteryParts.push(map.additional_battery_capacity);
+    }
+
+    if (map.additional_battery_energy) {
+      batteryParts.push(map.additional_battery_energy);
+    }
+
+    if (batteryParts.length) {
+      lines.push(`Дополнительная батарея: ${batteryParts.join(", ")}`);
+    } else if (map.additional_battery) {
+      lines.push(`Дополнительная батарея: ${map.additional_battery}`);
+    }
+
+    if (!lines.length) {
+      lines.push(
+        ...facts.map((f: any) => `${f.fact_key}: ${f.fact_value}`)
+      );
+    }
+
+    await sendMessage(chatId, lines.join("\n"));
+
+    return Response.json({ ok: true });
+  }
+
   if (text === "/memory") {
     const facts = await getLongTermFacts(chatId);
 
