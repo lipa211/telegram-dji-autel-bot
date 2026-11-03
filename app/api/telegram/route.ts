@@ -617,40 +617,53 @@ ${assistantText}`,
 function cleanTelegramText(text: string) {
   const links: string[] = [];
 
-  let result = text.replace(
+  const makeLink = (label: string, rawUrl: string) => {
+    let url = String(rawUrl)
+      .replace(/([?&])utm_source=openai(&?)/g, (_m, sep, tail) =>
+        tail ? sep : ""
+      )
+      .replace(/[?&]$/, "");
+
+    const safeLabel = String(label)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+
+    const safeUrl = url
+      .replace(/&/g, "&amp;")
+      .replace(/"/g, "&quot;");
+
+    const placeholder = `__TG_LINK_${links.length}__`;
+
+    links.push(
+      `<a href="${safeUrl}">${safeLabel || "Источник"}</a>`
+    );
+
+    return placeholder;
+  };
+
+  let result = text;
+
+  // Markdown: [site.com](https://...)
+  result = result.replace(
     /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
-    (_match, label, rawUrl) => {
-      const url = String(rawUrl)
-        .replace(/([?&])utm_source=openai(&?)/g, (_m, sep, tail) =>
-          tail ? sep : ""
-        )
-        .replace(/[?&]$/, "");
-
-      const safeLabel = String(label)
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;");
-
-      const safeUrl = url
-        .replace(/&/g, "&amp;")
-        .replace(/"/g, "&quot;");
-
-      const host = safeLabel || "Источник";
-      const placeholder = `__TG_LINK_${links.length}__`;
-
-      links.push(
-        `<a href="${safeUrl}">${host}</a>`
-      );
-
-      return placeholder;
-    }
+    (_match, label, url) => makeLink(label, url)
   );
 
+  // Уже преобразованный старый формат:
+  // site.com — https://...
+  result = result.replace(
+    /([A-Za-z0-9.-]+\.[A-Za-z]{2,})\s*[—-]\s*(https?:\/\/[^\s)]+)/g,
+    (_match, label, url) => makeLink(label, url)
+  );
+
+  // Экранируем остальной текст для HTML
   result = result
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
 
+  // Возвращаем безопасные HTML-ссылки
   links.forEach((link, index) => {
     result = result.replace(
       `__TG_LINK_${index}__`,
