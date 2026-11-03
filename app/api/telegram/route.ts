@@ -59,6 +59,103 @@ async function saveMemoryMessage(params: {
   }
 }
 
+
+async function getLongTermFacts(chatId: number) {
+  const supabase = getSupabase();
+  if (!supabase) return [];
+
+  const { data, error } = await supabase
+    .from("telegram_facts")
+    .select("fact_key, fact_value")
+    .eq("chat_id", chatId);
+
+  if (error) {
+    console.error("facts read error:", error);
+    return [];
+  }
+
+  return data || [];
+}
+
+
+async function saveFact(
+  chatId: number,
+  key: string,
+  value: string
+) {
+  const supabase = getSupabase();
+  if (!supabase) return;
+
+  const { error } = await supabase
+    .from("telegram_facts")
+    .upsert(
+      {
+        chat_id: chatId,
+        fact_key: key,
+        fact_value: value,
+        updated_at: new Date().toISOString(),
+      },
+      {
+        onConflict: "chat_id,fact_key",
+      }
+    );
+
+  if (error) {
+    console.error("facts save error:", error);
+  }
+}
+
+async function extractFacts(
+  openai: OpenAI,
+  text: string
+) {
+  if (!text.trim()) return [];
+
+  try {
+    const result = await openai.responses.create({
+      model: "gpt-6-luna",
+      instructions: `
+Из сообщения пользователя извлеки только постоянные технические факты,
+которые пригодятся в следующих разговорах.
+
+Примеры:
+- модель дрона
+- дополнительная батарея
+- ёмкость батареи
+- напряжение батареи
+- схема подключения
+- вес
+- версия прошивки
+- реальное время полёта
+- модель пульта
+
+Не сохраняй вопросы, советы, предположения и временные данные.
+
+Ответ только JSON:
+[{"key":"drone_model","value":"DJI Mavic 3T"}]
+
+Если фактов нет:
+[]
+`,
+      input: text,
+    });
+
+    let raw = result.output_text?.trim() || "[]";
+
+    raw = raw
+      .replace(/^```json\s*/i, "")
+      .replace(/^```\s*/i, "")
+      .replace(/\s*```$/i, "");
+
+    const parsed = JSON.parse(raw);
+
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (error) {
+    console.error("fact extraction error:", error);
+    return [];
+  }
+}
+
 async function sendMessage(chatId: number, text: string) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
 
@@ -221,6 +318,29 @@ export async function POST(req: Request) {
 
     const memory = await getRecentMessages(chatId, 12);
 
+    const extractedFacts = await extractFacts(openai, text);
+
+    for (const fact of extractedFacts) {
+      if (
+        fact &&
+        typeof fact.key === "string" &&
+        typeof fact.value === "string"
+      ) {
+        await saveFact(
+          chatId,
+          fact.key.toLowerCase().slice(0, 60),
+          fact.value.slice(0, 500)
+        );
+      }
+    }
+
+    const savedFacts = await getLongTermFacts(chatId);
+    const facts = await getLongTermFacts(chatId);
+
+    const factsText = facts
+      .map((f: any) => `${f.fact_key}: ${f.fact_value}`)
+      .join("\n");
+
     const response = await openai.responses.create({
       model: "gpt-6-luna",
       instructions: `
@@ -264,6 +384,17 @@ export async function POST(req: Request) {
 Технические темы: DJI, Mavic 3, Mavic 3T, Mavic 4, Matrice 4T, Autel, аккумуляторы, BMS, прошивки, ремонт и диагностика.
 `,
       input: [
+        ...(factsText
+          ? [
+              {
+                role: "user" as const,
+                content:
+                  "Уже известные постоянные факты этого чата:\n" +
+                  factsText +
+                  "\nИспользуй их как контекст и не проси повторять эти данные.",
+              },
+            ]
+          : []),
         ...memory.map((item: any) => ({
           role: item.role === "assistant" ? "assistant" as const : "user" as const,
           content: item.content,
