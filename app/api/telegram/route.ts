@@ -320,8 +320,6 @@ export async function POST(req: Request) {
 
     const extractedFacts = await extractFacts(openai, text);
 
-    console.log("EXTRACTED_FACTS:", JSON.stringify(extractedFacts));
-
     for (const fact of extractedFacts) {
       if (
         fact &&
