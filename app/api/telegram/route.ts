@@ -250,6 +250,28 @@ export async function POST(req: Request) {
   const chatId = message.chat.id;
   const text = message.text ?? message.caption ?? "";
 
+  if (text === "/help") {
+    await sendMessage(
+      chatId,
+      [
+        "Команды:",
+        "",
+        "/profile — показать профиль",
+        "/memory — показать всю память",
+        "/set ключ = значение — сохранить факт",
+        "/del ключ — удалить один факт",
+        "/forget — очистить долгую память",
+        "",
+        "Примеры:",
+        "/set вес батареи = 460 г",
+        "/set реальное время полёта = 58 минут",
+        "/set прошивка = 1001"
+      ].join("\n")
+    );
+
+    return Response.json({ ok: true });
+  }
+
   if (text.startsWith("/set ")) {
     const raw = text.slice(5).trim();
     const parts = raw.split("=");
