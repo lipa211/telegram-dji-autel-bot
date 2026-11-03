@@ -2399,9 +2399,52 @@ export async function POST(req: Request) {
     );
 
 
-    const answer =
+    let answer =
+
+
+
       response.output_text?.trim() ||
+
+
+
       "Не удалось сформировать ответ.";
+
+
+
+
+    const identificationMode =
+
+
+
+      isVehicleIdentificationMode(text, answer);
+
+
+
+
+    if (identificationMode) {
+
+
+
+      answer = cleanIdentificationReply(answer);
+
+
+
+
+      answer += `
+
+До подтверждения версии разборку не начинайте.
+
+Сейчас нужно:
+1. Уточнить поколение / кузов.
+2. Определить привод: 2WD или 4WD.
+3. Прислать фото нужной стороны автомобиля и, по возможности, фото снизу.
+4. При необходимости сверить VIN.
+
+После этого можно переходить к точной схеме ремонта.`;
+
+
+
+    }
 
     if (diagnosticCar && answer) {
       await saveCarMessage(
