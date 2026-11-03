@@ -215,6 +215,23 @@ export async function POST(req: Request) {
   }
 
   const update = await req.json();
+
+  console.log(
+    "TELEGRAM_UPDATE:",
+    JSON.stringify({
+      update_id: update?.update_id,
+      chat_type: update?.message?.chat?.type,
+      chat_id: update?.message?.chat?.id,
+      chat_title: update?.message?.chat?.title,
+      from_id: update?.message?.from?.id,
+      username: update?.message?.from?.username,
+      text: update?.message?.text,
+      caption: update?.message?.caption,
+      has_photo: Array.isArray(update?.message?.photo),
+      has_video: !!update?.message?.video,
+    })
+  );
+
   const message = update?.message;
 
   if (!message?.chat?.id) {
