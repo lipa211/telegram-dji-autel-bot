@@ -299,6 +299,128 @@ async function saveServiceEvent(
   }
 }
 
+
+async function getActiveCar(chatId: number) {
+  const supabase = getSupabase();
+  if (!supabase) return null;
+
+  const { data, error } = await supabase
+    .from("cars")
+    .select("id,slot,is_active")
+    .eq("chat_id", chatId)
+    .eq("is_active", true)
+    .maybeSingle();
+
+  if (error) {
+    console.error("getActiveCar error:", error);
+    return null;
+  }
+
+  return data;
+}
+
+async function getCars(chatId: number) {
+  const supabase = getSupabase();
+  if (!supabase) return [];
+
+  const { data, error } = await supabase
+    .from("cars")
+    .select("id,slot,is_active,created_at")
+    .eq("chat_id", chatId)
+    .order("slot", { ascending: true });
+
+  if (error) {
+    console.error("getCars error:", error);
+    return [];
+  }
+
+  return data || [];
+}
+
+async function getCarFacts(carId: number) {
+  const supabase = getSupabase();
+  if (!supabase) return [];
+
+  const { data, error } = await supabase
+    .from("car_facts")
+    .select("fact_key,fact_value,updated_at")
+    .eq("car_id", carId);
+
+  if (error) {
+    console.error("getCarFacts error:", error);
+    return [];
+  }
+
+  return data || [];
+}
+
+async function createCar(chatId: number) {
+  const supabase = getSupabase();
+  if (!supabase) return null;
+
+  const cars = await getCars(chatId);
+  const nextSlot =
+    cars.length > 0
+      ? Math.max(...cars.map((c: any) => c.slot)) + 1
+      : 1;
+
+  await supabase
+    .from("cars")
+    .update({ is_active: false })
+    .eq("chat_id", chatId);
+
+  const { data, error } = await supabase
+    .from("cars")
+    .insert({
+      chat_id: chatId,
+      slot: nextSlot,
+      is_active: true,
+    })
+    .select("id,slot,is_active")
+    .single();
+
+  if (error) {
+    console.error("createCar error:", error);
+    return null;
+  }
+
+  return data;
+}
+
+async function selectCar(chatId: number, slot: number) {
+  const supabase = getSupabase();
+  if (!supabase) return null;
+
+  const { data: car, error } = await supabase
+    .from("cars")
+    .select("id,slot")
+    .eq("chat_id", chatId)
+    .eq("slot", slot)
+    .maybeSingle();
+
+  if (error || !car) {
+    if (error) console.error("selectCar find error:", error);
+    return null;
+  }
+
+  await supabase
+    .from("cars")
+    .update({ is_active: false })
+    .eq("chat_id", chatId);
+
+  const { error: updateError } = await supabase
+    .from("cars")
+    .update({ is_active: true })
+    .eq("id", car.id);
+
+  if (updateError) {
+    console.error("selectCar update error:", updateError);
+    return null;
+  }
+
+  return car;
+}
+
 async function sendMessage(chatId: number, text: string) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
 
@@ -556,6 +678,80 @@ export async function POST(req: Request) {
         "/set реальное время полёта = 58 минут",
         "/set прошивка = 1001"
       ].join("\n")
+    );
+
+    return Response.json({ ok: true });
+  }
+
+  if (text === "/car add") {
+    const car = await createCar(chatId);
+
+    if (!car) {
+      await sendMessage(chatId, "Не удалось создать автомобиль.");
+      return Response.json({ ok: true });
+    }
+
+    await sendMessage(
+      chatId,
+      `Автомобиль №${car.slot} создан и выбран.\nТеперь напиши данные машины обычным сообщением.`
+    );
+
+    return Response.json({ ok: true });
+  }
+
+  if (text === "/cars") {
+    const cars = await getCars(chatId);
+
+    if (!cars.length) {
+      await sendMessage(
+        chatId,
+        "Автомобилей пока нет.\nИспользуй /car add"
+      );
+      return Response.json({ ok: true });
+    }
+
+    const lines: string[] = [];
+
+    for (const car of cars) {
+      const facts = await getCarFacts(car.id);
+
+      const map = Object.fromEntries(
+        facts.map((f: any) => [f.fact_key, f.fact_value])
+      );
+
+      const name =
+        [map.car_make, map.car_model, map.car_year]
+          .filter(Boolean)
+          .join(" ") || "Профиль не заполнен";
+
+      lines.push(
+        `${car.is_active ? "👉 " : ""}${car.slot}. ${name}`
+      );
+    }
+
+    await sendMessage(
+      chatId,
+      ["🚗 Автомобили", "", ...lines].join("\n")
+    );
+
+    return Response.json({ ok: true });
+  }
+
+  if (/^\/car\s+\d+$/.test(text)) {
+    const slot = Number(text.split(/\s+/)[1]);
+    const car = await selectCar(chatId, slot);
+
+    if (!car) {
+      await sendMessage(
+        chatId,
+        `Автомобиль №${slot} не найден.`
+      );
+      return Response.json({ ok: true });
+    }
+
+    await sendMessage(
+      chatId,
+      `Активный автомобиль: №${slot}`
     );
 
     return Response.json({ ok: true });
