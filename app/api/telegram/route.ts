@@ -257,7 +257,8 @@ async function saveServiceEvent(
   chatId: number,
   eventType: string,
   eventValue: string,
-  mileage?: string
+  mileage?: string,
+  carId?: number
 ) {
   try {
     const supabase = getSupabase();
@@ -287,6 +288,7 @@ async function saveServiceEvent(
         event_type: eventType,
         event_value: eventValue,
         mileage: mileage || null,
+        car_id: carId || null,
         parts: eventType === "parts" ? eventValue : null,
         cost: eventType === "repair_cost" ? eventValue : null,
       });
@@ -352,6 +354,34 @@ async function getCarFacts(carId: number) {
   }
 
   return data || [];
+}
+
+
+async function saveCarFact(
+  carId: number,
+  key: string,
+  value: string
+) {
+  const supabase = getSupabase();
+  if (!supabase) return;
+
+  const { error } = await supabase
+    .from("car_facts")
+    .upsert(
+      {
+        car_id: carId,
+        fact_key: key,
+        fact_value: value,
+        updated_at: new Date().toISOString(),
+      },
+      {
+        onConflict: "car_id,fact_key",
+      }
+    );
+
+  if (error) {
+    console.error("saveCarFact error:", error);
+  }
 }
 
 async function createCar(chatId: number) {
@@ -825,7 +855,21 @@ export async function POST(req: Request) {
         .replace(/[^a-zа-яё0-9]+/gi, "_")
         .replace(/^_+|_+$/g, "");
 
-    await saveFact(chatId, normalizedKey, value);
+    const activeCar = await getActiveCar(chatId);
+
+    if (!activeCar) {
+      await sendMessage(
+        chatId,
+        "Сначала создай или выбери автомобиль: /car add"
+      );
+      return Response.json({ ok: true });
+    }
+
+    await saveCarFact(
+      activeCar.id,
+      normalizedKey,
+      value
+    );
 
     await sendMessage(
       chatId,
@@ -896,7 +940,17 @@ export async function POST(req: Request) {
       return Response.json({ ok: true });
     }
 
-    const facts = await getLongTermFacts(chatId);
+    const activeCar = await getActiveCar(chatId);
+
+    if (!activeCar) {
+      await sendMessage(
+        chatId,
+        "Активный автомобиль не выбран."
+      );
+      return Response.json({ ok: true });
+    }
+
+    const facts = await getCarFacts(activeCar.id);
 
     const map = Object.fromEntries(
       facts.map((f: any) => [f.fact_key, f.fact_value])
@@ -904,10 +958,10 @@ export async function POST(req: Request) {
 
     const { data: events, error } = await supabase
       .from("service_events")
-      .select("event_type,event_value,mileage,created_at")
-      .eq("chat_id", chatId)
+      .select("event_type,event_value,mileage,created_at,parts,cost")
+      .eq("car_id", activeCar.id)
       .order("created_at", { ascending: false })
-      .limit(20);
+      .limit(30);
 
     if (error) {
       console.error("history error:", error);
@@ -918,7 +972,7 @@ export async function POST(req: Request) {
     if (!events?.length) {
       await sendMessage(
         chatId,
-        "История автомобиля пока пустая."
+        "История этого автомобиля пока пустая."
       );
       return Response.json({ ok: true });
     }
@@ -931,11 +985,10 @@ export async function POST(req: Request) {
       repair_cost: "Стоимость",
     };
 
-    const carName = [
-      map.car_make,
-      map.car_model,
-      map.car_year,
-    ].filter(Boolean).join(" ");
+    const carName =
+      [map.car_make, map.car_model, map.car_year]
+        .filter(Boolean)
+        .join(" ") || `Автомобиль №${activeCar.slot}`;
 
     const lines = events.map((event: any) => {
       const date = new Date(event.created_at).toLocaleDateString(
@@ -954,17 +1007,27 @@ export async function POST(req: Request) {
       chatId,
       [
         "🔧 История автомобиля",
-        carName ? `🚗 ${carName}` : "",
+        `🚗 ${carName}`,
         "",
         ...lines,
-      ].filter(Boolean).join("\n\n")
+      ].join("\n\n")
     );
 
     return Response.json({ ok: true });
   }
 
   if (text === "/profile") {
-    const facts = await getLongTermFacts(chatId);
+    const activeCar = await getActiveCar(chatId);
+
+    if (!activeCar) {
+      await sendMessage(
+        chatId,
+        "Активный автомобиль не выбран.\nИспользуй /cars или /car add"
+      );
+      return Response.json({ ok: true });
+    }
+
+    const facts = await getCarFacts(activeCar.id);
 
     const map = Object.fromEntries(
       facts.map((f: any) => [f.fact_key, f.fact_value])
@@ -981,24 +1044,22 @@ export async function POST(req: Request) {
       ["license_plate", "Госномер"],
       ["dtc_codes", "Ошибки"],
       ["current_problem", "Текущая неисправность"],
-      ["repair_history", "История ремонта"],
+      ["repair_history", "Последний ремонт"],
     ];
 
     const lines = fields
       .filter(([key]) => map[key])
       .map(([key, label]) => `${label}: ${map[key]}`);
 
-    if (!lines.length) {
-      await sendMessage(
-        chatId,
-        "Профиль автомобиля пока пуст."
-      );
-      return Response.json({ ok: true });
-    }
-
     await sendMessage(
       chatId,
-      ["🚗 Профиль автомобиля", "", ...lines].join("\n")
+      [
+        `🚗 Автомобиль №${activeCar.slot}`,
+        "",
+        ...(lines.length
+          ? lines
+          : ["Профиль пока не заполнен."]),
+      ].join("\n")
     );
 
     return Response.json({ ok: true });
@@ -1152,11 +1213,15 @@ export async function POST(req: Request) {
         const factKey = fact.key.toLowerCase().slice(0, 60);
         const factValue = fact.value.slice(0, 500);
 
-        await saveFact(
-          chatId,
-          factKey,
-          factValue
-        );
+        const activeCar = await getActiveCar(chatId);
+
+        if (activeCar) {
+          await saveCarFact(
+            activeCar.id,
+            factKey,
+            factValue
+          );
+        }
 
         if (
           [
@@ -1178,12 +1243,17 @@ export async function POST(req: Request) {
             (item: any) => item.fact_key === "mileage"
           )?.fact_value;
 
-          await saveServiceEvent(
-            chatId,
-            factKey,
-            factValue,
-            mileageFact?.value || savedMileage
-          );
+          const eventCar = await getActiveCar(chatId);
+
+          if (eventCar) {
+            await saveServiceEvent(
+              chatId,
+              factKey,
+              factValue,
+              mileageFact?.value || savedMileage,
+              eventCar.id
+            );
+          }
         }
       }
     }
