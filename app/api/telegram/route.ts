@@ -250,6 +250,51 @@ repair_history — выполненный ремонт или заменённа
   }
 }
 
+
+async function saveServiceEvent(
+  chatId: number,
+  eventType: string,
+  eventValue: string,
+  mileage?: string
+) {
+  try {
+    const supabase = getSupabase();
+    if (!supabase) return;
+
+    const { data: lastEvent } = await supabase
+      .from("service_events")
+      .select("event_type,event_value")
+      .eq("chat_id", chatId)
+      .eq("event_type", eventType)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    // Не записываем один и тот же факт подряд дважды
+    if (
+      lastEvent?.event_type === eventType &&
+      lastEvent?.event_value === eventValue
+    ) {
+      return;
+    }
+
+    const { error } = await supabase
+      .from("service_events")
+      .insert({
+        chat_id: chatId,
+        event_type: eventType,
+        event_value: eventValue,
+        mileage: mileage || null,
+      });
+
+    if (error) {
+      console.error("saveServiceEvent error:", error);
+    }
+  } catch (error) {
+    console.error("saveServiceEvent failed:", error);
+  }
+}
+
 async function sendMessage(chatId: number, text: string) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
 
@@ -637,41 +682,33 @@ export async function POST(req: Request) {
   }
 
   if (text === "/history") {
+    const supabase = getSupabase();
+
+    if (!supabase) {
+      await sendMessage(chatId, "Supabase недоступен.");
+      return Response.json({ ok: true });
+    }
+
     const facts = await getLongTermFacts(chatId);
 
     const map = Object.fromEntries(
       facts.map((f: any) => [f.fact_key, f.fact_value])
     );
 
-    const carName = [
-      map.car_make,
-      map.car_model,
-      map.car_year,
-    ].filter(Boolean).join(" ");
+    const { data: events, error } = await supabase
+      .from("service_events")
+      .select("event_type,event_value,mileage,created_at")
+      .eq("chat_id", chatId)
+      .order("created_at", { ascending: false })
+      .limit(20);
 
-    const lines: string[] = [];
-
-    if (carName) {
-      lines.push(`Автомобиль: ${carName}`);
+    if (error) {
+      console.error("history error:", error);
+      await sendMessage(chatId, "Не удалось получить историю.");
+      return Response.json({ ok: true });
     }
 
-    if (map.mileage) {
-      lines.push(`Пробег: ${map.mileage}`);
-    }
-
-    if (map.current_problem) {
-      lines.push(`Неисправность: ${map.current_problem}`);
-    }
-
-    if (map.dtc_codes) {
-      lines.push(`Коды ошибок: ${map.dtc_codes}`);
-    }
-
-    if (map.repair_history) {
-      lines.push(`История ремонта: ${map.repair_history}`);
-    }
-
-    if (!lines.length) {
+    if (!events?.length) {
       await sendMessage(
         chatId,
         "История автомобиля пока пустая."
@@ -679,9 +716,39 @@ export async function POST(req: Request) {
       return Response.json({ ok: true });
     }
 
+    const labels: Record<string, string> = {
+      current_problem: "Неисправность",
+      dtc_codes: "Ошибка",
+      repair_history: "Ремонт",
+    };
+
+    const carName = [
+      map.car_make,
+      map.car_model,
+      map.car_year,
+    ].filter(Boolean).join(" ");
+
+    const lines = events.map((event: any) => {
+      const date = new Date(event.created_at).toLocaleDateString(
+        "ru-RU",
+        { timeZone: "Europe/Kyiv" }
+      );
+
+      const mileage = event.mileage
+        ? ` · ${event.mileage}`
+        : "";
+
+      return `${date}${mileage}\n${labels[event.event_type] || event.event_type}: ${event.event_value}`;
+    });
+
     await sendMessage(
       chatId,
-      ["🔧 История автомобиля", "", ...lines].join("\n")
+      [
+        "🔧 История автомобиля",
+        carName ? `🚗 ${carName}` : "",
+        "",
+        ...lines,
+      ].filter(Boolean).join("\n\n")
     );
 
     return Response.json({ ok: true });
@@ -873,11 +940,36 @@ export async function POST(req: Request) {
         typeof fact.key === "string" &&
         typeof fact.value === "string"
       ) {
+        const factKey = fact.key.toLowerCase().slice(0, 60);
+        const factValue = fact.value.slice(0, 500);
+
         await saveFact(
           chatId,
-          fact.key.toLowerCase().slice(0, 60),
-          fact.value.slice(0, 500)
+          factKey,
+          factValue
         );
+
+        if (
+          ["current_problem", "dtc_codes", "repair_history"].includes(factKey)
+        ) {
+          const mileageFact = extractedFacts.find(
+            (item: any) =>
+              item?.key?.toLowerCase() === "mileage" &&
+              typeof item?.value === "string"
+          );
+
+          const savedMileageFacts = await getLongTermFacts(chatId);
+          const savedMileage = savedMileageFacts.find(
+            (item: any) => item.fact_key === "mileage"
+          )?.fact_value;
+
+          await saveServiceEvent(
+            chatId,
+            factKey,
+            factValue,
+            mileageFact?.value || savedMileage
+          );
+        }
       }
     }
 
