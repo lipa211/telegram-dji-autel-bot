@@ -270,11 +270,17 @@ async function saveServiceEvent(
     const supabase = getSupabase();
     if (!supabase) return;
 
-    const { data: lastEvent } = await supabase
+    let lastEventQuery = supabase
       .from("service_events")
       .select("event_type,event_value")
       .eq("chat_id", chatId)
-      .eq("event_type", eventType)
+      .eq("event_type", eventType);
+
+    if (carId) {
+      lastEventQuery = lastEventQuery.eq("car_id", carId);
+    }
+
+    const { data: lastEvent } = await lastEventQuery
       .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle();
@@ -1144,6 +1150,15 @@ async function telegramFileToDataUrl(fileId: string) {
   };
 }
 
+function isDroneRequest(text: string) {
+  const value = text.toLowerCase();
+  return [
+    "dji", "mavic", "мавик", "matrice", "матрич", "autel", "аутел",
+    "дрон", "квадрокоптер", "прошивка 1001", "firmware 1001",
+    "rc pro", "o3", "o4", "дополнительная батарея", "внешняя батарея"
+  ].some((word) => value.includes(word));
+}
+
 export async function POST(req: Request) {
   const secret = req.headers.get("x-telegram-bot-api-secret-token");
 
@@ -1209,7 +1224,7 @@ export async function POST(req: Request) {
     })
   );
 
-  const message = update?.message ?? update?.edited_message;
+  const message = update?.message;
 
   if (!message?.chat?.id) {
     return Response.json({ ok: true });
@@ -1731,6 +1746,22 @@ export async function POST(req: Request) {
       "вес дрона": "drone_weight",
       "прошивка": "firmware_version",
       "дрон": "drone_model",
+      "марка": "car_make",
+      "модель": "car_model",
+      "год": "car_year",
+      "год выпуска": "car_year",
+      "двигатель": "engine",
+      "мотор": "engine",
+      "поколение": "generation",
+      "кузов": "generation",
+      "код кузова": "generation",
+      "привод": "drive",
+      "сторона": "side",
+      "vin": "vin",
+      "вин": "vin",
+      "пробег": "mileage",
+      "коробка": "transmission",
+      "кпп": "transmission",
     };
 
     const normalizedKey =
@@ -1740,24 +1771,25 @@ export async function POST(req: Request) {
         .replace(/[^a-zа-яё0-9]+/gi, "_")
         .replace(/^_+|_+$/g, "");
 
+    const activeCar = await getActiveCar(chatId);
     const supabase = getSupabase();
 
-    if (!supabase) {
-      await sendMessage(chatId, "Не удалось открыть память.");
+    if (!supabase || !activeCar) {
+      await sendMessage(chatId, "Сначала выбери автомобиль: /cars");
       return Response.json({ ok: true });
     }
 
     const { error } = await supabase
-      .from("telegram_facts")
+      .from("car_facts")
       .delete()
-      .eq("chat_id", chatId)
+      .eq("car_id", activeCar.id)
       .eq("fact_key", normalizedKey);
 
     if (error) {
-      console.error("delete fact error:", error);
-      await sendMessage(chatId, "Не получилось удалить факт.");
+      console.error("delete car fact error:", error);
+      await sendMessage(chatId, "Не получилось удалить факт автомобиля.");
     } else {
-      await sendMessage(chatId, `Удалил: ${rawKey}`);
+      await sendMessage(chatId, `Удалил из профиля автомобиля: ${rawKey}`);
     }
 
     return Response.json({ ok: true });
@@ -2039,7 +2071,12 @@ export async function POST(req: Request) {
 
     const memory: any[] = [];
 
-    const extractedFacts = await extractFacts(openai, text);
+    const diagnosticCar = await getActiveCar(chatId);
+    const vehicleContextEnabled = Boolean(diagnosticCar) && !isDroneRequest(text);
+
+    const extractedFacts = vehicleContextEnabled
+      ? await extractFacts(openai, text)
+      : [];
 
     const explicitVehicleFacts = parseExplicitVehicleFacts(text);
     for (const [key, value] of Object.entries(explicitVehicleFacts)) {
@@ -2058,11 +2095,9 @@ export async function POST(req: Request) {
         const factKey = fact.key.toLowerCase().slice(0, 60);
         const factValue = fact.value.slice(0, 500);
 
-        const activeCar = await getActiveCar(chatId);
-
-        if (activeCar) {
+        if (vehicleContextEnabled && diagnosticCar) {
           await saveCarFact(
-            activeCar.id,
+            diagnosticCar.id,
             factKey,
             factValue
           );
@@ -2083,31 +2118,31 @@ export async function POST(req: Request) {
               typeof item?.value === "string"
           );
 
-          const eventCar = await getActiveCar(chatId);
-          const savedMileageFacts = eventCar ? await getCarFacts(eventCar.id) : [];
+          const savedMileageFacts = diagnosticCar
+            ? await getCarFacts(diagnosticCar.id)
+            : [];
           const savedMileage = savedMileageFacts.find(
             (item: any) => item.fact_key === "mileage"
           )?.fact_value;
 
-
-          if (eventCar) {
+          if (vehicleContextEnabled && diagnosticCar) {
             await saveServiceEvent(
               chatId,
               factKey,
               factValue,
               mileageFact?.value || savedMileage,
-              eventCar.id
+              diagnosticCar.id
             );
           }
         }
       }
     }
 
-    const diagnosticCar = await getActiveCar(chatId);
+    let factsText = vehicleContextEnabled
+      ? "Активный автомобиль выбран."
+      : "Автомобильный контекст для этого запроса не используется.";
 
-    let factsText = "Активный автомобиль не выбран.";
-
-    if (diagnosticCar) {
+    if (vehicleContextEnabled && diagnosticCar) {
       const carFacts = await getCarFacts(diagnosticCar.id);
       const carEvents = await getRecentCarEvents(
         diagnosticCar.id,
@@ -2167,11 +2202,11 @@ export async function POST(req: Request) {
     }
 
 
-    const diagnosticMessages = diagnosticCar
+    const diagnosticMessages = vehicleContextEnabled && diagnosticCar
       ? await getRecentCarMessages(diagnosticCar.id, 12)
       : [];
 
-    if (diagnosticCar && text) {
+    if (vehicleContextEnabled && diagnosticCar && text) {
       await saveCarMessage(
         diagnosticCar.id,
         "user",
@@ -2190,7 +2225,7 @@ export async function POST(req: Request) {
       ],
       tool_choice: "auto",
       instructions: `
-Ты опытный AI-помощник автосервиса и автомеханика. Помогаешь диагностировать автомобили по симптомам, кодам ошибок, фото, видео и описанию владельца.
+Ты технический диагност. Для автомобильных запросов работаешь как опытный автомеханик. Для DJI, Mavic, Matrice и Autel отвечаешь как специалист по дронам и их электронике. Никогда не смешивай данные активного автомобиля с запросом про дрон.
 
 Отвечай как обычный опытный человек, а не как ИИ или справочник.
 
@@ -2377,38 +2412,9 @@ export async function POST(req: Request) {
 - не помещай неподтверждённые моменты затяжки крупно на изображение;
 - если приводишь числовой момент, обязательно укажи, для какой конкретной версии он подтверждён;
 
-- если версия узла не подтверждена, не описывай конкретную последовательность его разборки;
-- не пиши "на одной из версий снимается так", если это может подтолкнуть пользователя повторить неподтверждённую процедуру;
-- вместо этого кратко объясни, почему сначала нужно определить версию;
-
-
-- если точный вариант не установлен, изображение должно быть только общей диагностической схемой без конкретной конструкции детали;
-- если для ремонта важны поколение, кузов, привод или комплектация, а они не подтверждены, сначала переходи в режим идентификации версии;
-- в режиме идентификации версии не давай подробную разборку узла;
-- в режиме идентификации версии вообще не описывай снятие деталей;
-- не предлагай снимать колесо или любые элементы автомобиля;
-- на этапе идентификации разрешены только внешний осмотр, фотографирование и уточнение данных;
-- никакого демонтажа до подтверждения версии;
-
-- не пиши "снять колесо", "снять тормозной узел", "снять ступицу", "открутить крепёж", "снять кулак", "выпрессовать подшипник";
-- не описывай порядок демонтажа даже "в общих чертах";
-- не давай моменты затяжки, номера крепежа и точную последовательность;
-- разрешено только:
-  1. определить нужную сторону;
-  2. показать общий вид узла;
-  3. определить 2WD или 4WD;
-  4. запросить VIN / фото / данные автомобиля;
-  5. после подтверждения версии перейти к точной схеме ремонта;
-
-- не используй формулировки "снять ступицу", "открутить крепёж", "снять кулак", "выпрессовать подшипник" до подтверждения версии;
-- вместо этого говори: "после подтверждения версии перейдём к точной схеме разборки";
-
-- сначала попроси только действительно нужные данные: фото автомобиля, кузов/поколение, привод 2WD/4WD, VIN или фото самого узла;
-- для точного подбора предпочитай полный VIN;
-- если пользователь не хочет отправлять полный VIN, попроси фото шильдика/данных автомобиля без лишней персональной информации либо фото узла и сведения о приводе;
-- не утверждай, что последних 8 символов VIN всегда достаточно для точной идентификации;
-
-- после подтверждения версии уже можно давать точную процедуру ремонта и подробную картинку;
+- если версия автомобиля или узла НЕ подтверждена, не давай точную последовательность разборки;
+- если поколение/кузов, привод и двигатель подтверждены сохранённым профилем или текущим сообщением, не возвращайся к идентификации и можно давать применимую процедуру ремонта;
+- никогда не проси повторно параметры, уже присутствующие в профиле активного автомобиля;
 
 
 - если точное значение не подтверждено, прямо скажи это;
@@ -2448,7 +2454,7 @@ export async function POST(req: Request) {
 - сравнивай найденное с симптомами конкретного автомобиля;
 - не выдавай типичную неисправность из интернета за подтверждённый диагноз;
 - указывай, что проверить в первую очередь;
-- если найден источник, оставляй ссылку или цитирование;
+- если интернет использован для проверки, используй проверенные сведения без вывода URL и списка источников, если пользователь сам их не попросил;
 - при необходимости используй интернет-поиск для актуальной технической информации;
 - предпочитай официальные руководства, сервисную документацию и надежные технические источники;
 - отвечай по-русски, кратко, понятно и по делу.
@@ -2500,7 +2506,7 @@ export async function POST(req: Request) {
 
 
 
-    const repairFacts = diagnosticCar
+    const repairFacts = vehicleContextEnabled && diagnosticCar
     ? await getCarFacts(diagnosticCar.id)
     : [];
 
@@ -2516,9 +2522,11 @@ export async function POST(req: Request) {
     text
   );
 
-  answer = composeRepairAnswer(answer, vehicleState);
+  if (vehicleContextEnabled) {
+    answer = composeRepairAnswer(answer, vehicleState);
+  }
 
-  if (diagnosticCar && answer) {
+  if (vehicleContextEnabled && diagnosticCar && answer) {
       await saveCarMessage(
         diagnosticCar.id,
         "assistant",
@@ -2527,6 +2535,7 @@ export async function POST(req: Request) {
     }
 
     if (
+      vehicleContextEnabled &&
       diagnosticCar &&
       shouldGenerateDiagnosticImage(text, answer)
     ) {
@@ -2577,7 +2586,7 @@ export async function POST(req: Request) {
 
 
 
-    if (diagnosticCar && text && answer) {
+    if (vehicleContextEnabled && diagnosticCar && text && answer) {
       const diagnosticSummary =
         await buildDiagnosticSummary(
           openai,
