@@ -250,6 +250,111 @@ export async function POST(req: Request) {
   const chatId = message.chat.id;
   const text = message.text ?? message.caption ?? "";
 
+  if (text.startsWith("/set ")) {
+    const raw = text.slice(5).trim();
+    const parts = raw.split("=");
+
+    if (parts.length < 2) {
+      await sendMessage(
+        chatId,
+        "Формат: /set ключ = значение\nПример: /set вес батареи = 460 г"
+      );
+      return Response.json({ ok: true });
+    }
+
+    const rawKey = parts.shift()!.trim();
+    const value = parts.join("=").trim();
+
+    if (!rawKey || !value) {
+      await sendMessage(
+        chatId,
+        "Нужно указать и ключ, и значение."
+      );
+      return Response.json({ ok: true });
+    }
+
+    const aliases: Record<string, string> = {
+      "вес батареи": "additional_battery_weight",
+      "реальное время полёта": "real_flight_time",
+      "время полёта": "flight_time",
+      "подключение батареи": "battery_connection",
+      "тип подключения": "connection_type",
+      "полезная нагрузка": "payload_weight",
+      "вес дрона": "drone_weight",
+      "прошивка": "firmware_version",
+      "дрон": "drone_model",
+    };
+
+    const normalizedKey =
+      aliases[rawKey.toLowerCase()] ||
+      rawKey
+        .toLowerCase()
+        .replace(/[^a-zа-яё0-9]+/gi, "_")
+        .replace(/^_+|_+$/g, "");
+
+    await saveFact(chatId, normalizedKey, value);
+
+    await sendMessage(
+      chatId,
+      `Запомнил: ${rawKey} — ${value}`
+    );
+
+    return Response.json({ ok: true });
+  }
+
+  if (text.startsWith("/del ")) {
+    const rawKey = text.slice(5).trim();
+
+    if (!rawKey) {
+      await sendMessage(
+        chatId,
+        "Формат: /del ключ\nПример: /del вес батареи"
+      );
+      return Response.json({ ok: true });
+    }
+
+    const aliases: Record<string, string> = {
+      "вес батареи": "additional_battery_weight",
+      "реальное время полёта": "real_flight_time",
+      "время полёта": "flight_time",
+      "подключение батареи": "battery_connection",
+      "тип подключения": "connection_type",
+      "полезная нагрузка": "payload_weight",
+      "вес дрона": "drone_weight",
+      "прошивка": "firmware_version",
+      "дрон": "drone_model",
+    };
+
+    const normalizedKey =
+      aliases[rawKey.toLowerCase()] ||
+      rawKey
+        .toLowerCase()
+        .replace(/[^a-zа-яё0-9]+/gi, "_")
+        .replace(/^_+|_+$/g, "");
+
+    const supabase = getSupabase();
+
+    if (!supabase) {
+      await sendMessage(chatId, "Не удалось открыть память.");
+      return Response.json({ ok: true });
+    }
+
+    const { error } = await supabase
+      .from("telegram_facts")
+      .delete()
+      .eq("chat_id", chatId)
+      .eq("fact_key", normalizedKey);
+
+    if (error) {
+      console.error("delete fact error:", error);
+      await sendMessage(chatId, "Не получилось удалить факт.");
+    } else {
+      await sendMessage(chatId, `Удалил: ${rawKey}`);
+    }
+
+    return Response.json({ ok: true });
+  }
+
   if (text === "/profile") {
     const facts = await getLongTermFacts(chatId);
 
