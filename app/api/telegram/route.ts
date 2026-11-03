@@ -2,6 +2,42 @@ import OpenAI from "openai";
 import { createClient } from "@supabase/supabase-js";
 
 
+
+// ============================================================
+// TELEGRAM UPDATE DEDUPLICATION
+// Один update_id должен обрабатываться только один раз.
+// В памяти держим последние update_id как быструю защиту.
+// ============================================================
+
+const telegramUpdateCache =
+  ((globalThis as any).__telegramUpdateCache ??=
+    new Map<number, number>()) as Map<number, number>;
+
+function claimTelegramUpdate(updateId: unknown): boolean {
+  const id = Number(updateId);
+
+  if (!Number.isFinite(id)) {
+    return true;
+  }
+
+  const now = Date.now();
+  const ttl = 10 * 60 * 1000;
+
+  for (const [storedId, timestamp] of telegramUpdateCache) {
+    if (now - timestamp > ttl) {
+      telegramUpdateCache.delete(storedId);
+    }
+  }
+
+  if (telegramUpdateCache.has(id)) {
+    console.log("Duplicate Telegram update ignored:", id);
+    return false;
+  }
+
+  telegramUpdateCache.set(id, now);
+  return true;
+}
+
 function getSupabase() {
   const url = process.env.SUPABASE_URL;
   const key = process.env.SUPABASE_SECRET_KEY;
@@ -1522,6 +1558,11 @@ export async function POST(req: Request) {
 
   const update = await req.json();
 
+  if (!claimTelegramUpdate(update?.update_id)) {
+    return Response.json({ ok: true, duplicate: true });
+  }
+
+
   // Защита от повторной доставки одного Telegram update.
   // Telegram может повторить webhook, пока генерируется длинный ответ/изображение.
   const telegramUpdateId = Number(update?.update_id);
@@ -2836,8 +2877,7 @@ export async function POST(req: Request) {
     );
 
 
-    let telegramReplySent = false;
-
+    let pendingDiagnosticImage: Buffer | null = null;
     let answer =
 
 
@@ -2953,13 +2993,8 @@ ${answer}`;
               ? answer.slice(0, 947).trimEnd() + "..."
               : answer;
 
-          await sendPhotoBuffer(
-            chatId,
-            diagnosticImage,
-            photoCaption
-          );
+          pendingDiagnosticImage = diagnosticImage;
 
-          telegramReplySent = true;
         }
       } catch (error) {
         console.error(
@@ -3020,7 +3055,20 @@ ${answer}`;
       content: answer,
     });
 
-    if (!telegramReplySent) {
+    if (pendingDiagnosticImage) {
+      // Telegram caption ограничен по длине.
+      // Поэтому ответ для фото заранее держим компактным.
+      const caption =
+        answer.length > 950
+          ? answer.slice(0, 947).trimEnd() + "..."
+          : answer;
+
+      await sendPhotoBuffer(
+        chatId,
+        pendingDiagnosticImage,
+        caption
+      );
+    } else {
       await sendMessage(chatId, answer);
     }
   } catch (error: any) {
