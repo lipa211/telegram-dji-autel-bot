@@ -62,12 +62,13 @@ export async function POST(req: Request) {
       "Не удалось сформировать ответ.";
 
     await sendMessage(chatId, answer);
-  } catch (error) {
+  } catch (error: any) {
     console.error(error);
 
     await sendMessage(
       chatId,
-      "Ошибка при обращении к ИИ. Проверьте OPENAI_API_KEY и баланс API."
+      `Ошибка OpenAI:
+${error?.message || String(error)}`
     );
   }
 
