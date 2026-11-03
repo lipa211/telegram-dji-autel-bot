@@ -250,6 +250,15 @@ export async function POST(req: Request) {
   const chatId = message.chat.id;
   const text = message.text ?? message.caption ?? "";
 
+  if (text === "/model") {
+    await sendMessage(
+      chatId,
+      "Текущая модель OpenAI: gpt-6-luna"
+    );
+
+    return Response.json({ ok: true });
+  }
+
   if (text === "/stats") {
     const supabase = getSupabase();
 
