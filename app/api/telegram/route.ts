@@ -1475,6 +1475,13 @@ export async function POST(req: Request) {
       ],
     });
 
+    await saveWebKnowledge(
+      chatId,
+      text,
+      response
+    );
+
+
     const answer =
       response.output_text?.trim() ||
       "Не удалось сформировать ответ.";
