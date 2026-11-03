@@ -384,6 +384,26 @@ async function saveCarFact(
   }
 }
 
+
+async function getRecentCarEvents(carId: number, limit = 10) {
+  const supabase = getSupabase();
+  if (!supabase) return [];
+
+  const { data, error } = await supabase
+    .from("service_events")
+    .select("event_type,event_value,mileage,created_at")
+    .eq("car_id", carId)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+
+  if (error) {
+    console.error("getRecentCarEvents error:", error);
+    return [];
+  }
+
+  return data || [];
+}
+
 async function createCar(chatId: number) {
   const supabase = getSupabase();
   if (!supabase) return null;
@@ -1520,10 +1540,6 @@ export async function POST(req: Request) {
               },
             ]
           : []),
-        ...memory.map((item: any) => ({
-          role: item.role === "assistant" ? "assistant" as const : "user" as const,
-          content: item.content,
-        })),
         {
           role: "user" as const,
           content,
