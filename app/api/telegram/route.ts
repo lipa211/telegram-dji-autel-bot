@@ -204,7 +204,9 @@ license_plate — госномер
 transmission — коробка передач
 dtc_codes — подтверждённые коды ошибок
 current_problem — текущая неисправность или устойчивый симптом
-repair_history — выполненный ремонт или заменённая деталь
+repair_history — выполненный ремонт
+parts — заменённые или установленные детали
+repair_cost — стоимость ремонта, работ или деталей
 
 Правила:
 - сохраняй только то, что пользователь сообщил как факт;
@@ -285,6 +287,8 @@ async function saveServiceEvent(
         event_type: eventType,
         event_value: eventValue,
         mileage: mileage || null,
+        parts: eventType === "parts" ? eventValue : null,
+        cost: eventType === "repair_cost" ? eventValue : null,
       });
 
     if (error) {
@@ -609,6 +613,13 @@ export async function POST(req: Request) {
     "неисправность": "current_problem",
     "проблема": "current_problem",
     "история ремонта": "repair_history",
+    "детали": "parts",
+    "запчасти": "parts",
+    "замененные детали": "parts",
+    "заменённые детали": "parts",
+    "стоимость ремонта": "repair_cost",
+    "стоимость": "repair_cost",
+    "сумма ремонта": "repair_cost",
     };
 
     const normalizedKey =
@@ -720,6 +731,8 @@ export async function POST(req: Request) {
       current_problem: "Неисправность",
       dtc_codes: "Ошибка",
       repair_history: "Ремонт",
+      parts: "Детали",
+      repair_cost: "Стоимость",
     };
 
     const carName = [
@@ -950,7 +963,13 @@ export async function POST(req: Request) {
         );
 
         if (
-          ["current_problem", "dtc_codes", "repair_history"].includes(factKey)
+          [
+            "current_problem",
+            "dtc_codes",
+            "repair_history",
+            "parts",
+            "repair_cost"
+          ].includes(factKey)
         ) {
           const mileageFact = extractedFacts.find(
             (item: any) =>
