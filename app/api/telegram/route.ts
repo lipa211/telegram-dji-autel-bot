@@ -250,6 +250,49 @@ export async function POST(req: Request) {
   const chatId = message.chat.id;
   const text = message.text ?? message.caption ?? "";
 
+  if (text === "/memory") {
+    const facts = await getLongTermFacts(chatId);
+
+    if (!facts.length) {
+      await sendMessage(chatId, "Пока ничего постоянного не запомнил.");
+      return Response.json({ ok: true });
+    }
+
+    const memoryText = facts
+      .map((f: any) => `• ${f.fact_key}: ${f.fact_value}`)
+      .join("\n");
+
+    await sendMessage(
+      chatId,
+      "Вот что я помню:\n\n" + memoryText
+    );
+
+    return Response.json({ ok: true });
+  }
+
+  if (text === "/forget") {
+    const supabase = getSupabase();
+
+    if (!supabase) {
+      await sendMessage(chatId, "Не удалось открыть память.");
+      return Response.json({ ok: true });
+    }
+
+    const { error } = await supabase
+      .from("telegram_facts")
+      .delete()
+      .eq("chat_id", chatId);
+
+    if (error) {
+      console.error("forget error:", error);
+      await sendMessage(chatId, "Не получилось очистить память.");
+    } else {
+      await sendMessage(chatId, "Постоянная память этого чата очищена.");
+    }
+
+    return Response.json({ ok: true });
+  }
+
   if (text === "/start") {
     await sendMessage(
       chatId,
