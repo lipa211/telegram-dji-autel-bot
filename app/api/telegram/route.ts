@@ -525,6 +525,25 @@ export async function POST(req: Request) {
       "вес дрона": "drone_weight",
       "прошивка": "firmware_version",
       "дрон": "drone_model",
+    "марка": "car_make",
+    "модель": "car_model",
+    "год": "car_year",
+    "год выпуска": "car_year",
+    "двигатель": "engine",
+    "мотор": "engine",
+    "vin": "vin",
+    "вин": "vin",
+    "пробег": "mileage",
+    "госномер": "license_plate",
+    "коробка": "transmission",
+    "кпп": "transmission",
+    "ошибка": "dtc_codes",
+    "ошибки": "dtc_codes",
+    "код ошибки": "dtc_codes",
+    "коды ошибок": "dtc_codes",
+    "неисправность": "current_problem",
+    "проблема": "current_problem",
+    "история ремонта": "repair_history",
     };
 
     const normalizedKey =
@@ -610,6 +629,17 @@ export async function POST(req: Request) {
     );
 
     const labels: Record<string, string> = {
+      car_make: "Марка",
+      car_model: "Модель",
+      car_year: "Год выпуска",
+      engine: "Двигатель",
+      vin: "VIN",
+      mileage: "Пробег",
+      license_plate: "Госномер",
+      transmission: "Коробка",
+      dtc_codes: "Ошибки",
+      current_problem: "Текущая неисправность",
+      repair_history: "История ремонта",
       drone_model: "Дрон",
       firmware: "Прошивка",
       firmware_version: "Прошивка",
