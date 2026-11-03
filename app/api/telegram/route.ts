@@ -665,6 +665,70 @@ async function sendMessage(chatId: number, text: string) {
   });
 }
 
+
+async function sendPhoto(
+  chatId: number,
+  photo: string,
+  caption?: string
+) {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+
+  if (!token) return;
+
+  await fetch(
+    `https://api.telegram.org/bot${token}/sendPhoto`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        chat_id: chatId,
+        photo,
+        caption: caption
+          ? cleanTelegramText(caption)
+          : undefined,
+      }),
+    }
+  );
+}
+
+async function sendMediaGroup(
+  chatId: number,
+  items: Array<{
+    photo: string;
+    caption?: string;
+  }>
+) {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+
+  if (!token || !items.length) return;
+
+  const media = items
+    .slice(0, 3)
+    .map((item) => ({
+      type: "photo",
+      media: item.photo,
+      caption: item.caption
+        ? cleanTelegramText(item.caption)
+        : undefined,
+    }));
+
+  await fetch(
+    `https://api.telegram.org/bot${token}/sendMediaGroup`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        chat_id: chatId,
+        media,
+      }),
+    }
+  );
+}
+
 async function telegramFileToDataUrl(fileId: string) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
 
