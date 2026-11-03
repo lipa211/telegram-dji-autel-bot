@@ -733,6 +733,49 @@ function getVisualGuideForCase(
 }
 
 
+
+function isVehicleIdentificationMode(text: string, answer: string) {
+  const value = `${text} ${answer}`.toLowerCase();
+
+  const unknownVersion =
+    value.includes("кузов и привод не знаю") ||
+    value.includes("кузов не знаю") ||
+    value.includes("привод не знаю") ||
+    value.includes("версию нужно уточнить") ||
+    value.includes("версия не подтверждена") ||
+    value.includes("сначала нужно определить версию") ||
+    value.includes("сначала уточнить поколение") ||
+    value.includes("точную разборку пока");
+
+  const vehicleRepair =
+    value.includes("ступиц") ||
+    value.includes("подшипник") ||
+    value.includes("подвеск") ||
+    value.includes("тормоз") ||
+    value.includes("стекл") ||
+    value.includes("усилител") ||
+    value.includes("предохранител") ||
+    value.includes("датчик") ||
+    value.includes("ремонт") ||
+    value.includes("замен");
+
+  return unknownVersion && vehicleRepair;
+}
+
+function cleanIdentificationReply(text: string) {
+  return text
+    // Убираем упоминания источников
+    .replace(/[^.!?\n]*(руководств|каталог|документац|источник|сервисн(?:ая|ой|ую) процедур)[^.!?\n]*[.!?]?/gi, "")
+
+    // Убираем действия разборки при неизвестной версии
+    .replace(/[^.!?\n]*(снять колесо|снимают колесо|снять тормоз|снимают тормоз|освободить датчик|освобождают датчик|снять ступиц|снимают ступиц|открутить|выпрессовать|снять кулак)[^.!?\n]*[.!?]?/gi, "")
+
+    // Убираем остаточные фразы
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
+}
+
 async function generateDiagnosticImage(
   openai: any,
   carName: string,
@@ -740,6 +783,9 @@ async function generateDiagnosticImage(
   diagnosis: string
 ) {
   try {
+    const identificationMode =
+      isVehicleIdentificationMode(problem, diagnosis);
+
     const result = await openai.images.generate({
       model: "gpt-image-2.5-flare",
       size: "1024x1536",
@@ -754,6 +800,31 @@ ${problem}
 
 Диагностический вывод:
 ${diagnosis}
+
+${identificationMode ? `
+КРИТИЧЕСКИЙ РЕЖИМ: ИДЕНТИФИКАЦИЯ АВТОМОБИЛЯ.
+
+Версия автомобиля НЕ подтверждена.
+
+ЗАПРЕЩЕНО:
+- показывать снятие колеса;
+- показывать демонтаж тормозного узла;
+- показывать снятие ступицы;
+- показывать откручивание крепежа;
+- показывать мультиметр или измерения;
+- показывать пошаговый ремонт;
+- показывать инструменты для демонтажа.
+
+ПОКАЗЫВАЙ ТОЛЬКО:
+1. Правильную сторону автомобиля.
+2. Общую область нужного узла.
+3. Как визуально отличить 2WD от 4WD.
+4. Какое фото нужно сделать.
+5. Какие данные автомобиля нужно уточнить.
+6. Надпись: "После подтверждения версии — точная схема ремонта".
+
+Это схема ИДЕНТИФИКАЦИИ, а не инструкция по ремонту.
+` : ""}
 
 Требования:
 - стиль сервисной технической инструкции;
