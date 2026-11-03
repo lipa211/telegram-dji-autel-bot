@@ -720,6 +720,101 @@ function getVisualGuideForCase(
   return [];
 }
 
+
+async function generateDiagnosticImage(
+  openai: any,
+  carName: string,
+  problem: string,
+  diagnosis: string
+) {
+  try {
+    const result = await openai.images.generate({
+      model: "gpt-image-2.5-flare",
+      size: "1024x1536",
+      prompt: `
+Создай вертикальную техническую иллюстрацию для автомеханика.
+
+Автомобиль:
+${carName}
+
+Неисправность:
+${problem}
+
+Диагностический вывод:
+${diagnosis}
+
+Требования:
+- стиль сервисной технической инструкции;
+- реалистичные автомобильные узлы;
+- крупные стрелки;
+- короткие подписи на русском языке;
+- показать, куда смотреть и что проверять;
+- если нужно измерение мультиметром, показать точки измерения;
+- если точное расположение детали зависит от комплектации, явно напиши это;
+- не придумывай номера пинов, предохранителей и точные распиновки, если они не подтверждены;
+- не показывай лишние детали;
+- изображение должно быть полезно механику с телефона;
+- максимум 4-5 ключевых шагов.
+`,
+    });
+
+    const b64 = result.data?.[0]?.b64_json;
+
+    if (!b64) {
+      console.error("Image generation returned no image");
+      return null;
+    }
+
+    return Buffer.from(b64, "base64");
+  } catch (error) {
+    console.error("generateDiagnosticImage error:", error);
+    return null;
+  }
+}
+
+async function sendPhotoBuffer(
+  chatId: number,
+  imageBuffer: Buffer,
+  caption?: string
+) {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  if (!token) return;
+
+  const form = new FormData();
+
+  form.append("chat_id", String(chatId));
+
+  if (caption) {
+    form.append(
+      "caption",
+      cleanTelegramText(caption)
+    );
+  }
+
+  form.append(
+    "photo",
+    new Blob([imageBuffer], {
+      type: "image/png",
+    }),
+    "diagnostic.png"
+  );
+
+  const response = await fetch(
+    `https://api.telegram.org/bot${token}/sendPhoto`,
+    {
+      method: "POST",
+      body: form,
+    }
+  );
+
+  if (!response.ok) {
+    console.error(
+      "sendPhotoBuffer error:",
+      await response.text()
+    );
+  }
+}
+
 async function sendPhoto(
   chatId: number,
   photo: string,
@@ -1983,30 +2078,57 @@ export async function POST(req: Request) {
       );
     }
 
-    if (diagnosticCar) {
-      const visualFacts = await getCarFacts(diagnosticCar.id);
+    if (
+      diagnosticCar &&
+      shouldGenerateDiagnosticImage(text, answer)
+    ) {
+      try {
+        const imageFacts =
+          await getCarFacts(diagnosticCar.id);
 
-      const visualMap = Object.fromEntries(
-        visualFacts.map(
-          (f: any) => [f.fact_key, f.fact_value]
-        )
-      );
+        const imageMap = Object.fromEntries(
+          imageFacts.map(
+            (f: any) => [
+              f.fact_key,
+              f.fact_value,
+            ]
+          )
+        );
 
-      const visualGuide = getVisualGuideForCase(
-        visualMap,
-        text
-      );
+        const carName =
+          [
+            imageMap.car_make,
+            imageMap.car_model,
+            imageMap.car_year,
+          ]
+            .filter(Boolean)
+            .join(" ") ||
+          `Автомобиль №${diagnosticCar.slot}`;
 
-      if (visualGuide.length) {
-        await sendMediaGroup(
-          chatId,
-          visualGuide.map((item) => ({
-            photo: item.photo,
-            caption: item.caption,
-          }))
+        const diagnosticImage =
+          await generateDiagnosticImage(
+            openai,
+            carName,
+            text,
+            answer
+          );
+
+        if (diagnosticImage) {
+          await sendPhotoBuffer(
+            chatId,
+            diagnosticImage,
+            `Наглядная схема диагностики: ${carName}`
+          );
+        }
+      } catch (error) {
+        console.error(
+          "automatic diagnostic image error:",
+          error
         );
       }
     }
+
+
 
     if (diagnosticCar && text && answer) {
       const diagnosticSummary =
