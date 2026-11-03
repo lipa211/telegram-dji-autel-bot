@@ -813,6 +813,213 @@ function cleanIdentificationReply(text: string) {
     .trim();
 }
 
+
+type VehicleRepairState = {
+  mode: "UNKNOWN" | "PARTIAL" | "CONFIRMED";
+  model?: string;
+  generation?: string;
+  drive?: string;
+  engine?: string;
+  side?: string;
+  missing: string[];
+};
+
+function pickFact(
+  facts: Record<string, string>,
+  keys: string[]
+): string | undefined {
+  for (const key of keys) {
+    const value = facts[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  return undefined;
+}
+
+function deriveVehicleRepairState(
+  facts: Record<string, string>,
+  userText: string
+): VehicleRepairState {
+  const allValues = Object.values(facts).join(" ");
+  const combined = `${allValues} ${userText}`.toLowerCase();
+
+  const model = pickFact(facts, [
+    "car_model",
+    "vehicle_model",
+    "model",
+    "diagnostic_car_model",
+  ]);
+
+  let generation = pickFact(facts, [
+    "generation",
+    "body",
+    "body_code",
+    "chassis",
+    "platform",
+    "car_generation",
+  ]);
+
+  let drive = pickFact(facts, [
+    "drive",
+    "drive_type",
+    "drivetrain",
+    "car_drive",
+  ]);
+
+  let engine = pickFact(facts, [
+    "engine",
+    "engine_volume",
+    "engine_displacement",
+    "motor",
+    "engine_type",
+  ]);
+
+  let side = pickFact(facts, [
+    "side",
+    "repair_side",
+    "wheel_side",
+  ]);
+
+  // Подхватываем известные значения даже если они лежат
+  // в другом сохранённом поле.
+  if (!generation) {
+    if (/\bkm\b/i.test(combined)) generation = "KM";
+    else if (/\bsl\b/i.test(combined)) generation = "SL";
+  }
+
+  if (!drive) {
+    if (/\b2wd\b/i.test(combined) || combined.includes("передний привод")) {
+      drive = "2WD";
+    } else if (
+      /\b4wd\b/i.test(combined) ||
+      combined.includes("полный привод")
+    ) {
+      drive = "4WD";
+    }
+  }
+
+  if (!engine) {
+    const engineMatch = combined.match(
+      /\b(1[.,]6|2[.,]0|2[.,]4|2[.,]7|3[.,]3)\b/
+    );
+    if (engineMatch) {
+      engine = engineMatch[1].replace(",", ".");
+    }
+  }
+
+  if (!side) {
+    if (combined.includes("задн") && combined.includes("прав")) {
+      side = "задняя правая";
+    } else if (combined.includes("задн") && combined.includes("лев")) {
+      side = "задняя левая";
+    } else if (combined.includes("передн") && combined.includes("прав")) {
+      side = "передняя правая";
+    } else if (combined.includes("передн") && combined.includes("лев")) {
+      side = "передняя левая";
+    }
+  }
+
+  const missing: string[] = [];
+
+  if (!generation) missing.push("поколение / кузов");
+  if (!drive) missing.push("привод");
+  if (!engine) missing.push("двигатель");
+
+  let mode: VehicleRepairState["mode"];
+
+  if (!generation || !drive) {
+    mode = "UNKNOWN";
+  } else if (!engine) {
+    mode = "PARTIAL";
+  } else {
+    mode = "CONFIRMED";
+  }
+
+  return {
+    mode,
+    model,
+    generation,
+    drive,
+    engine,
+    side,
+    missing,
+  };
+}
+
+function vehicleStateHeader(state: VehicleRepairState): string {
+  const confirmed: string[] = [];
+
+  if (state.model) confirmed.push(state.model);
+  if (state.generation) confirmed.push(state.generation);
+  if (state.drive) confirmed.push(state.drive);
+  if (state.engine) confirmed.push(`двигатель ${state.engine}`);
+  if (state.side) confirmed.push(state.side);
+
+  const confirmedText =
+    confirmed.length > 0 ? confirmed.join(", ") : "данные автомобиля";
+
+  if (state.mode === "UNKNOWN") {
+    return `Статус: версия автомобиля не определена.
+Подтверждено: ${confirmedText}.
+Требует уточнения: ${state.missing.join(", ")}.`;
+  }
+
+  if (state.mode === "PARTIAL") {
+    return `Подтверждено: ${confirmedText}.
+Требует уточнения: ${state.missing.join(", ")}.`;
+  }
+
+  return `Подтверждено: ${confirmedText}.`;
+}
+
+function cleanRepairAnswerForState(
+  text: string,
+  state: VehicleRepairState
+): string {
+  let result = text;
+
+  // Уже известные параметры не спрашиваем повторно.
+  if (state.generation) {
+    result = result
+      .replace(
+        /[^.!?\n]*(уточнить|определить|проверить)[^.!?\n]*(поколен|кузов)[^.!?\n]*[.!?]?/gi,
+        ""
+      );
+  }
+
+  if (state.drive) {
+    result = result
+      .replace(
+        /[^.!?\n]*(уточнить|определить|проверить)[^.!?\n]*(2wd|4wd|привод)[^.!?\n]*[.!?]?/gi,
+        ""
+      );
+  }
+
+  // Если неизвестен двигатель — не выдаём числовые моменты
+  // затяжки как готовую норму.
+  if (!state.engine) {
+    result = result
+      .split("\n")
+      .filter(
+        (line) =>
+          !/\b\d{2,4}\s*[–—-]\s*\d{2,4}\s*(н[·.\s]?м|nm)\b/i.test(line) &&
+          !/\b\d{2,4}\s*(н[·.\s]?м|nm)\b/i.test(line)
+      )
+      .join("\n");
+
+    result = result.replace(
+      /[^.!?\n]*(момент(?:ы)? затяжки)[^.!?\n]*[.!?]?/gi,
+      ""
+    );
+  }
+
+  return result
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
+}
+
 async function generateDiagnosticImage(
   openai: any,
   carName: string,
@@ -837,6 +1044,35 @@ ${problem}
 
 Диагностический вывод:
 ${diagnosis}
+
+СИНХРОНИЗАЦИЯ СО СТАТУСОМ АВТОМОБИЛЯ:
+
+Если в диагностическом выводе есть:
+"Статус: версия автомобиля не определена"
+→ изображение только для идентификации.
+→ не показывать разборку и ремонт.
+
+Если есть:
+"Подтверждено:" и "Требует уточнения: двигатель"
+→ кузов и привод УЖЕ ИЗВЕСТНЫ.
+→ НЕ писать "уточнить кузов".
+→ НЕ писать "уточнить поколение".
+→ НЕ писать "проверить 2WD/4WD".
+→ НЕ показывать другой привод как альтернативную основную схему.
+→ показывать ремонтный узел именно подтверждённой версии.
+→ отдельный небольшой блок:
+  "Требует уточнения: двигатель".
+→ не показывать неподтверждённые моменты затяжки цифрами.
+
+Если есть только:
+"Подтверждено:"
+и нет "Требует уточнения"
+→ это полностью подтверждённая версия.
+→ изображение должно быть полноценной ремонтной схемой именно этой версии.
+→ не возвращаться к идентификации автомобиля.
+
+НИКОГДА не противоречь разделам
+"Подтверждено" и "Требует уточнения".
 
 ${identificationMode ? `
 КРИТИЧЕСКИЙ РЕЖИМ: ИДЕНТИФИКАЦИЯ АВТОМОБИЛЯ.
@@ -2497,22 +2733,52 @@ export async function POST(req: Request) {
 
 
 
-    const identificationMode =
-    isVehicleIdentificationMode(text, answer);
+    const repairFacts = diagnosticCar
+    ? await getCarFacts(diagnosticCar.id)
+    : [];
 
-  if (identificationMode) {
-    answer = `Для точной инструкции сначала нужно определить версию автомобиля.
+  const repairFactMap = Object.fromEntries(
+    repairFacts.map((f: any) => [
+      String(f.fact_key),
+      String(f.fact_value ?? ""),
+    ])
+  );
+
+  const vehicleState = deriveVehicleRepairState(
+    repairFactMap,
+    text
+  );
+
+  answer = cleanRepairAnswerForState(
+    answer,
+    vehicleState
+  );
+
+  if (vehicleState.mode === "UNKNOWN") {
+    answer = `${vehicleStateHeader(vehicleState)}
+
+Для точной инструкции сначала нужно определить недостающие данные.
 
 Сейчас достаточно:
-1. Уточнить поколение / кузов.
-2. Определить привод: 2WD или 4WD.
-3. Прислать фото нужной стороны автомобиля.
-4. По возможности прислать фото снизу, чтобы был виден привод.
-5. При необходимости сверить VIN.
+1. Прислать фото нужной стороны автомобиля.
+2. По возможности сделать фото снизу.
+3. Уточнить поколение / кузов и привод, если они неизвестны.
+4. VIN можно прислать при наличии — он помогает точнее сверить вариант.
 
-До подтверждения версии детали не разбирайте и ступицу не покупайте.
+До подтверждения версии точную разборку и моменты затяжки не применяйте.
 
-После определения версии я дам точную схему именно вашего узла, порядок ремонта и наглядное сопровождение.`;
+После определения версии дам подходящую схему ремонта и наглядное сопровождение.`;
+  } else if (vehicleState.mode === "PARTIAL") {
+    answer = `${vehicleStateHeader(vehicleState)}
+
+${answer}
+
+Общую схему ремонта для уже подтверждённых кузова и привода можно использовать.
+Точные моменты затяжки, номер детали и отличия, зависящие от двигателя, нужно уточнить после определения двигателя или сверки по VIN.`;
+  } else {
+    answer = `${vehicleStateHeader(vehicleState)}
+
+${answer}`;
   }
 
   if (diagnosticCar && answer) {
