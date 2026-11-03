@@ -733,7 +733,7 @@ function parseExplicitVehicleFacts(text: string) {
   if (engine) result.engine = engine.replace(",", ".");
 
   const pair = (a: string, b: string) =>
-    new RegExp(`(?:${a})\\w*[^а-яёa-z0-9]{0,8}(?:${b})\\w*|(?:${b})\\w*[^а-яёa-z0-9]{0,8}(?:${a})\\w*`, "i").test(text);
+    new RegExp(`(?:${a})[а-яё]*[^а-яёa-z0-9]{0,8}(?:${b})[а-яё]*|(?:${b})[а-яё]*[^а-яёa-z0-9]{0,8}(?:${a})[а-яё]*`, "i").test(text);
 
   if (pair("задн", "прав")) {
     result.side = "задняя правая";
