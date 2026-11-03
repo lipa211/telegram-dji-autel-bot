@@ -2808,6 +2808,8 @@ export async function POST(req: Request) {
     );
 
 
+    let telegramReplySent = false;
+
     let answer =
 
 
@@ -2918,11 +2920,18 @@ ${answer}`;
           );
 
         if (diagnosticImage) {
+          const photoCaption =
+            answer.length > 950
+              ? answer.slice(0, 947).trimEnd() + "..."
+              : answer;
+
           await sendPhotoBuffer(
             chatId,
             diagnosticImage,
-            `Наглядная схема диагностики: ${carName}`
+            photoCaption
           );
+
+          telegramReplySent = true;
         }
       } catch (error) {
         console.error(
@@ -2983,7 +2992,9 @@ ${answer}`;
       content: answer,
     });
 
-    await sendMessage(chatId, answer);
+    if (!telegramReplySent) {
+      await sendMessage(chatId, answer);
+    }
   } catch (error: any) {
     console.error(error);
 
