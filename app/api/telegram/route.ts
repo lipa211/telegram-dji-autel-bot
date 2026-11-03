@@ -250,6 +250,61 @@ export async function POST(req: Request) {
   const chatId = message.chat.id;
   const text = message.text ?? message.caption ?? "";
 
+  if (text === "/stats") {
+    const supabase = getSupabase();
+
+    if (!supabase) {
+      await sendMessage(chatId, "Supabase недоступен.");
+      return Response.json({ ok: true });
+    }
+
+    const { count: messageCount, error: messageError } = await supabase
+      .from("telegram_messages")
+      .select("id", { count: "exact", head: true })
+      .eq("chat_id", chatId);
+
+    const { count: factCount, error: factError } = await supabase
+      .from("telegram_facts")
+      .select("id", { count: "exact", head: true })
+      .eq("chat_id", chatId);
+
+    const { data: latestFact, error: latestError } = await supabase
+      .from("telegram_facts")
+      .select("updated_at")
+      .eq("chat_id", chatId)
+      .order("updated_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (messageError || factError || latestError) {
+      console.error("stats error:", {
+        messageError,
+        factError,
+        latestError,
+      });
+
+      await sendMessage(chatId, "Не удалось получить статистику.");
+      return Response.json({ ok: true });
+    }
+
+    const lastUpdated = latestFact?.updated_at
+      ? new Date(latestFact.updated_at).toLocaleString("ru-RU", {
+          timeZone: "Europe/Kyiv",
+        })
+      : "нет данных";
+
+    await sendMessage(
+      chatId,
+      [
+        `Сообщений в памяти: ${messageCount ?? 0}`,
+        `Долгих фактов: ${factCount ?? 0}`,
+        `Последнее обновление: ${lastUpdated}`,
+      ].join("\n")
+    );
+
+    return Response.json({ ok: true });
+  }
+
   if (text === "/status") {
     const statusLines: string[] = [];
 
