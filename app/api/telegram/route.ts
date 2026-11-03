@@ -1,3 +1,5 @@
+import OpenAI from "openai";
+
 async function sendMessage(chatId: number, text: string) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
 
@@ -34,10 +36,39 @@ export async function POST(req: Request) {
   if (text === "/start") {
     await sendMessage(
       chatId,
-      "Привет. Бот работает. Следующим шагом подключим ИИ по DJI и Autel."
+      "Привет. Я ИИ-помощник по DJI, Mavic и Autel. Задавайте вопрос."
     );
-  } else if (text) {
-    await sendMessage(chatId, `Получил: ${text}`);
+    return Response.json({ ok: true });
+  }
+
+  if (!text.trim()) {
+    return Response.json({ ok: true });
+  }
+
+  try {
+    const openai = new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY,
+    });
+
+    const response = await openai.responses.create({
+      model: "gpt-6-luna",
+      instructions:
+        "Ты технический помощник по DJI, Mavic, Matrice и Autel. Отвечай на русском языке, кратко, понятно и технически точно. Если не уверен в факте, прямо скажи об этом.",
+      input: text,
+    });
+
+    const answer =
+      response.output_text?.trim() ||
+      "Не удалось сформировать ответ.";
+
+    await sendMessage(chatId, answer);
+  } catch (error) {
+    console.error(error);
+
+    await sendMessage(
+      chatId,
+      "Ошибка при обращении к ИИ. Проверьте OPENAI_API_KEY и баланс API."
+    );
   }
 
   return Response.json({ ok: true });
