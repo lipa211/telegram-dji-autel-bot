@@ -574,6 +574,45 @@ async function selectCar(chatId: number, slot: number) {
   return car;
 }
 
+
+async function buildDiagnosticSummary(
+  openai: any,
+  userText: string,
+  assistantText: string
+) {
+  try {
+    const result = await openai.responses.create({
+      model: "gpt-6-luna",
+      instructions: `
+Сделай очень краткий итог автомобильной диагностики на русском языке.
+
+Формат:
+Симптом: ...
+Проверено: ...
+Вероятно: ...
+Дальше: ...
+
+Правила:
+- максимум 4 короткие строки;
+- не придумывай выполненные проверки;
+- не превращай предположение в подтвержденный диагноз;
+- если чего-то нет, пиши "не указано";
+- никаких ссылок и длинных объяснений.
+`,
+      input: `Сообщение клиента:
+${userText}
+
+Ответ диагноста:
+${assistantText}`,
+    });
+
+    return result.output_text?.trim() || null;
+  } catch (error) {
+    console.error("buildDiagnosticSummary failed:", error);
+    return null;
+  }
+}
+
 async function sendMessage(chatId: number, text: string) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
 
@@ -1166,6 +1205,7 @@ export async function POST(req: Request) {
       repair_history: "Ремонт",
       parts: "Детали",
       repair_cost: "Стоимость",
+      diagnostic_summary: "Итог диагностики",
     };
 
     const carName =
@@ -1628,6 +1668,33 @@ export async function POST(req: Request) {
         "assistant",
         answer
       );
+    }
+
+    if (diagnosticCar && text && answer) {
+      const diagnosticSummary =
+        await buildDiagnosticSummary(
+          openai,
+          text,
+          answer
+        );
+
+      if (diagnosticSummary) {
+        const activeFacts =
+          await getCarFacts(diagnosticCar.id);
+
+        const mileage =
+          activeFacts.find(
+            (f: any) => f.fact_key === "mileage"
+          )?.fact_value;
+
+        await saveServiceEvent(
+          chatId,
+          "diagnostic_summary",
+          diagnosticSummary,
+          mileage,
+          diagnosticCar.id
+        );
+      }
     }
 
     const memoryText =
