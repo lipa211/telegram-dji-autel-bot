@@ -404,6 +404,50 @@ async function getRecentCarEvents(carId: number, limit = 10) {
   return data || [];
 }
 
+
+async function saveCarMessage(
+  carId: number,
+  role: "user" | "assistant",
+  content: string
+) {
+  const supabase = getSupabase();
+  if (!supabase) return;
+
+  const { error } = await supabase
+    .from("car_messages")
+    .insert({
+      car_id: carId,
+      role,
+      content,
+    });
+
+  if (error) {
+    console.error("saveCarMessage error:", error);
+  }
+}
+
+async function getRecentCarMessages(
+  carId: number,
+  limit = 12
+) {
+  const supabase = getSupabase();
+  if (!supabase) return [];
+
+  const { data, error } = await supabase
+    .from("car_messages")
+    .select("role,content,created_at")
+    .eq("car_id", carId)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+
+  if (error) {
+    console.error("getRecentCarMessages error:", error);
+    return [];
+  }
+
+  return (data || []).reverse();
+}
+
 async function createCar(chatId: number) {
   const supabase = getSupabase();
   if (!supabase) return null;
@@ -1460,6 +1504,19 @@ export async function POST(req: Request) {
         .join("\n");
     }
 
+
+    const diagnosticMessages = diagnosticCar
+      ? await getRecentCarMessages(diagnosticCar.id, 12)
+      : [];
+
+    if (diagnosticCar && text) {
+      await saveCarMessage(
+        diagnosticCar.id,
+        "user",
+        text
+      );
+    }
+
     const response = await openai.responses.create({
       model: await getSelectedModel(chatId),
       tools: [
@@ -1540,6 +1597,13 @@ export async function POST(req: Request) {
               },
             ]
           : []),
+        ...diagnosticMessages.map((item: any) => ({
+          role:
+            item.role === "assistant"
+              ? "assistant" as const
+              : "user" as const,
+          content: item.content,
+        })),
         {
           role: "user" as const,
           content,
@@ -1557,6 +1621,14 @@ export async function POST(req: Request) {
     const answer =
       response.output_text?.trim() ||
       "Не удалось сформировать ответ.";
+
+    if (diagnosticCar && answer) {
+      await saveCarMessage(
+        diagnosticCar.id,
+        "assistant",
+        answer
+      );
+    }
 
     const memoryText =
       text.trim() ||
