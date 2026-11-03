@@ -216,19 +216,28 @@ export async function POST(req: Request) {
 
   const update = await req.json();
 
+  const incoming =
+    update?.message ??
+    update?.edited_message ??
+    update?.channel_post ??
+    update?.edited_channel_post;
+
   console.log(
     "TELEGRAM_UPDATE:",
     JSON.stringify({
       update_id: update?.update_id,
-      chat_type: update?.message?.chat?.type,
-      chat_id: update?.message?.chat?.id,
-      chat_title: update?.message?.chat?.title,
-      from_id: update?.message?.from?.id,
-      username: update?.message?.from?.username,
-      text: update?.message?.text,
-      caption: update?.message?.caption,
-      has_photo: Array.isArray(update?.message?.photo),
-      has_video: !!update?.message?.video,
+      update_keys: Object.keys(update || {}),
+      chat_type: incoming?.chat?.type,
+      chat_id: incoming?.chat?.id,
+      chat_title: incoming?.chat?.title,
+      message_thread_id: incoming?.message_thread_id,
+      is_topic_message: incoming?.is_topic_message,
+      from_id: incoming?.from?.id,
+      username: incoming?.from?.username,
+      text: incoming?.text,
+      caption: incoming?.caption,
+      has_photo: Array.isArray(incoming?.photo),
+      has_video: !!incoming?.video,
     })
   );
 
