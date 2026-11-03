@@ -734,32 +734,43 @@ function getVisualGuideForCase(
 
 
 
-function isVehicleIdentificationMode(text: string, answer: string) {
-  const value = `${text} ${answer}`.toLowerCase();
+function isVehicleIdentificationMode(
+  text: string,
+  answer: string = ""
+) {
+  const userText = text.toLowerCase();
+  const modelText = answer.toLowerCase();
 
-  const unknownVersion =
-    value.includes("кузов и привод не знаю") ||
-    value.includes("кузов не знаю") ||
-    value.includes("привод не знаю") ||
-    value.includes("версию нужно уточнить") ||
-    value.includes("версия не подтверждена") ||
-    value.includes("сначала нужно определить версию") ||
-    value.includes("сначала уточнить поколение") ||
-    value.includes("точную разборку пока");
+  const confirmedFromContext =
+    (
+      modelText.includes("по данным чата") ||
+      modelText.includes("по сохранённым данным") ||
+      modelText.includes("в профиле автомобиля")
+    ) &&
+    (
+      modelText.includes("2wd") ||
+      modelText.includes("4wd") ||
+      modelText.includes("передний привод") ||
+      modelText.includes("полный привод")
+    ) &&
+    (
+      modelText.includes("km") ||
+      modelText.includes("sl") ||
+      modelText.includes("поколение")
+    );
 
-  const vehicleRepair =
-    value.includes("ступиц") ||
-    value.includes("подшипник") ||
-    value.includes("подвеск") ||
-    value.includes("тормоз") ||
-    value.includes("стекл") ||
-    value.includes("усилител") ||
-    value.includes("предохранител") ||
-    value.includes("датчик") ||
-    value.includes("ремонт") ||
-    value.includes("замен");
+  if (confirmedFromContext) return false;
 
-  return unknownVersion && vehicleRepair;
+  return (
+    userText.includes("кузов и привод не знаю") ||
+    userText.includes("кузов не знаю") ||
+    userText.includes("привод не знаю") ||
+    userText.includes("поколение не знаю") ||
+    userText.includes("версию не знаю") ||
+    userText.includes("комплектацию не знаю") ||
+    userText.includes("не знаю какой привод") ||
+    userText.includes("не знаю кузов")
+  );
 }
 
 function cleanIdentificationReply(text: string) {
@@ -2413,40 +2424,24 @@ export async function POST(req: Request) {
 
 
     const identificationMode =
+    isVehicleIdentificationMode(text, answer);
 
+  if (identificationMode) {
+    answer = `Для точной инструкции сначала нужно определить версию автомобиля.
 
-
-      isVehicleIdentificationMode(text, answer);
-
-
-
-
-    if (identificationMode) {
-
-
-
-      answer = cleanIdentificationReply(answer);
-
-
-
-
-      answer += `
-
-До подтверждения версии разборку не начинайте.
-
-Сейчас нужно:
+Сейчас достаточно:
 1. Уточнить поколение / кузов.
 2. Определить привод: 2WD или 4WD.
-3. Прислать фото нужной стороны автомобиля и, по возможности, фото снизу.
-4. При необходимости сверить VIN.
+3. Прислать фото нужной стороны автомобиля.
+4. По возможности прислать фото снизу, чтобы был виден привод.
+5. При необходимости сверить VIN.
 
-После этого можно переходить к точной схеме ремонта.`;
+До подтверждения версии детали не разбирайте и ступицу не покупайте.
 
+После определения версии я дам точную схему именно вашего узла, порядок ремонта и наглядное сопровождение.`;
+  }
 
-
-    }
-
-    if (diagnosticCar && answer) {
+  if (diagnosticCar && answer) {
       await saveCarMessage(
         diagnosticCar.id,
         "assistant",
