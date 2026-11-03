@@ -613,6 +613,33 @@ ${assistantText}`,
   }
 }
 
+
+function cleanTelegramText(text: string) {
+  return text
+    // [Название](https://site.ru/page) -> Название — https://site.ru/page
+    .replace(
+      /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
+      (_match, label, url) => {
+        const cleanUrl = String(url)
+          .replace(/([?&])utm_source=openai(&?)/g, (_m, sep, tail) =>
+            tail ? sep : ""
+          )
+          .replace(/[?&]$/, "");
+
+        return `${label} — ${cleanUrl}`;
+      }
+    )
+
+    // Убираем оставшийся tracking OpenAI из обычных URL
+    .replace(
+      /([?&])utm_source=openai(?=&|\s|$)/g,
+      ""
+    )
+
+    // Убираем двойные пустые скобки вокруг ссылок
+    .replace(/\(\s*(https?:\/\/[^)]+)\s*\)/g, "$1");
+}
+
 async function sendMessage(chatId: number, text: string) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
 
@@ -621,7 +648,7 @@ async function sendMessage(chatId: number, text: string) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       chat_id: chatId,
-      text,
+      text: cleanTelegramText(text),
     }),
   });
 }
