@@ -1319,7 +1319,7 @@ export async function POST(req: Request) {
       return Response.json({ ok: true });
     }
 
-    const memory = await getRecentMessages(chatId, 12);
+    const memory: any[] = [];
 
     const extractedFacts = await extractFacts(openai, text);
 
@@ -1377,12 +1377,68 @@ export async function POST(req: Request) {
       }
     }
 
-    const savedFacts = await getLongTermFacts(chatId);
-    const facts = await getLongTermFacts(chatId);
+    const diagnosticCar = await getActiveCar(chatId);
 
-    const factsText = facts
-      .map((f: any) => `${f.fact_key}: ${f.fact_value}`)
-      .join("\n");
+    let factsText = "Активный автомобиль не выбран.";
+
+    if (diagnosticCar) {
+      const carFacts = await getCarFacts(diagnosticCar.id);
+      const carEvents = await getRecentCarEvents(
+        diagnosticCar.id,
+        10
+      );
+
+      const carMap = Object.fromEntries(
+        carFacts.map(
+          (f: any) => [f.fact_key, f.fact_value]
+        )
+      );
+
+      const carName =
+        [
+          carMap.car_make,
+          carMap.car_model,
+          carMap.car_year,
+        ]
+          .filter(Boolean)
+          .join(" ") ||
+        `Автомобиль №${diagnosticCar.slot}`;
+
+      const profileText = carFacts
+        .map(
+          (f: any) =>
+            `${f.fact_key}: ${f.fact_value}`
+        )
+        .join("\n");
+
+      const historyText = carEvents
+        .map(
+          (e: any) =>
+            `${e.event_type}: ${e.event_value}` +
+            (e.mileage
+              ? `, пробег ${e.mileage}`
+              : "")
+        )
+        .join("\n");
+
+      factsText = [
+        `АКТИВНЫЙ АВТОМОБИЛЬ: ${carName}`,
+        `Номер: ${diagnosticCar.slot}`,
+        "",
+        "Используй ТОЛЬКО этот автомобиль.",
+        "Не используй сведения о других машинах пользователя.",
+        "Не спрашивай, какая машина активна: она уже указана.",
+        "",
+        profileText
+          ? "Профиль:\n" + profileText
+          : "",
+        historyText
+          ? "История:\n" + historyText
+          : "",
+      ]
+        .filter(Boolean)
+        .join("\n");
+    }
 
     const response = await openai.responses.create({
       model: await getSelectedModel(chatId),
