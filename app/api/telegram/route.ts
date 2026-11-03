@@ -327,7 +327,7 @@ async function getCars(chatId: number) {
 
   const { data, error } = await supabase
     .from("cars")
-    .select("id,slot,is_active,created_at")
+    .select("id,slot,is_active,display_name,created_at")
     .eq("chat_id", chatId)
     .order("slot", { ascending: true });
 
@@ -415,6 +415,65 @@ async function createCar(chatId: number) {
   }
 
   return data;
+}
+
+
+async function deleteCar(chatId: number, slot: number) {
+  const supabase = getSupabase();
+  if (!supabase) return false;
+
+  const { data: car } = await supabase
+    .from("cars")
+    .select("id,is_active")
+    .eq("chat_id", chatId)
+    .eq("slot", slot)
+    .maybeSingle();
+
+  if (!car) return false;
+
+  const wasActive = car.is_active === true;
+
+  const { error } = await supabase
+    .from("cars")
+    .delete()
+    .eq("id", car.id);
+
+  if (error) {
+    console.error("deleteCar error:", error);
+    return false;
+  }
+
+  if (wasActive) {
+    const remaining = await getCars(chatId);
+
+    if (remaining.length) {
+      await selectCar(chatId, remaining[0].slot);
+    }
+  }
+
+  return true;
+}
+
+async function renameCar(
+  chatId: number,
+  slot: number,
+  name: string
+) {
+  const supabase = getSupabase();
+  if (!supabase) return false;
+
+  const { error } = await supabase
+    .from("cars")
+    .update({ display_name: name })
+    .eq("chat_id", chatId)
+    .eq("slot", slot);
+
+  if (error) {
+    console.error("renameCar error:", error);
+    return false;
+  }
+
+  return true;
 }
 
 async function selectCar(chatId: number, slot: number) {
@@ -713,6 +772,64 @@ export async function POST(req: Request) {
     return Response.json({ ok: true });
   }
 
+  if (text.startsWith("/car delete ")) {
+    const slot = Number(text.slice("/car delete ".length).trim());
+
+    if (!Number.isInteger(slot) || slot < 1) {
+      await sendMessage(
+        chatId,
+        "Формат: /car delete 2"
+      );
+      return Response.json({ ok: true });
+    }
+
+    const ok = await deleteCar(chatId, slot);
+
+    await sendMessage(
+      chatId,
+      ok
+        ? `Автомобиль №${slot} удалён.`
+        : `Автомобиль №${slot} не найден.`
+    );
+
+    return Response.json({ ok: true });
+  }
+
+  if (text.startsWith("/car rename ")) {
+    const raw = text.slice("/car rename ".length).trim();
+    const parts = raw.split("=");
+
+    if (parts.length < 2) {
+      await sendMessage(
+        chatId,
+        "Формат: /car rename 2 = Моя Kia"
+      );
+      return Response.json({ ok: true });
+    }
+
+    const slot = Number(parts.shift()?.trim());
+    const name = parts.join("=").trim();
+
+    if (!Number.isInteger(slot) || slot < 1 || !name) {
+      await sendMessage(
+        chatId,
+        "Формат: /car rename 2 = Моя Kia"
+      );
+      return Response.json({ ok: true });
+    }
+
+    const ok = await renameCar(chatId, slot, name);
+
+    await sendMessage(
+      chatId,
+      ok
+        ? `Автомобиль №${slot} переименован: ${name}`
+        : `Не удалось переименовать автомобиль №${slot}.`
+    );
+
+    return Response.json({ ok: true });
+  }
+
   if (text === "/car add") {
     const car = await createCar(chatId);
 
@@ -750,9 +867,11 @@ export async function POST(req: Request) {
       );
 
       const name =
+        car.display_name ||
         [map.car_make, map.car_model, map.car_year]
           .filter(Boolean)
-          .join(" ") || "Профиль не заполнен";
+          .join(" ") ||
+        "Профиль не заполнен";
 
       lines.push(
         `${car.is_active ? "👉 " : ""}${car.slot}. ${name}`
