@@ -262,6 +262,26 @@ export async function POST(req: Request) {
       facts.map((f: any) => [f.fact_key, f.fact_value])
     );
 
+    const labels: Record<string, string> = {
+      drone_model: "Дрон",
+      firmware: "Прошивка",
+      firmware_version: "Прошивка",
+      additional_battery: "Дополнительная батарея",
+      additional_battery_configuration: "Конфигурация батареи",
+      additional_battery_capacity: "Ёмкость батареи",
+      additional_battery_energy: "Энергия батареи",
+      additional_battery_weight: "Вес батареи",
+      battery_weight: "Вес батареи",
+      connection_type: "Подключение",
+      battery_connection: "Подключение батареи",
+      flight_time: "Время полёта",
+      real_flight_time: "Реальное время полёта",
+      payload: "Полезная нагрузка",
+      payload_weight: "Полезная нагрузка",
+      drone_weight: "Вес дрона",
+      notes: "Примечание",
+    };
+
     const lines: string[] = [];
 
     if (map.drone_model) {
@@ -288,13 +308,28 @@ export async function POST(req: Request) {
       lines.push(`Дополнительная батарея: ${map.additional_battery}`);
     }
 
-    if (!lines.length) {
-      lines.push(
-        ...facts.map((f: any) => `${f.fact_key}: ${f.fact_value}`)
-      );
+    const alreadyShown = new Set([
+      "drone_model",
+      "additional_battery",
+      "additional_battery_configuration",
+      "additional_battery_capacity",
+      "additional_battery_energy",
+    ]);
+
+    for (const fact of facts) {
+      if (alreadyShown.has(fact.fact_key)) continue;
+
+      const label =
+        labels[fact.fact_key] ||
+        fact.fact_key
+          .replace(/_/g, " ")
+          .replace(/^./, (c: string) => c.toUpperCase());
+
+      lines.push(`${label}: ${fact.fact_value}`);
     }
 
-    await sendMessage(chatId, lines.join("\n"));
+    await sendMessage(chatId, lines.join("
+"));
 
     return Response.json({ ok: true });
   }
