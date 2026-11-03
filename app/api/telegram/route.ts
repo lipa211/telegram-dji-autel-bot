@@ -60,6 +60,71 @@ async function saveMemoryMessage(params: {
 }
 
 
+
+async function saveWebKnowledge(
+  chatId: number,
+  query: string,
+  response: any
+) {
+  try {
+    const supabase = getSupabase();
+    if (!supabase) return;
+
+    const output = Array.isArray(response?.output)
+      ? response.output
+      : [];
+
+    const usedWebSearch = output.some(
+      (item: any) => item?.type === "web_search_call"
+    );
+
+    if (!usedWebSearch) return;
+
+    const sources: Array<{ url: string; title?: string }> = [];
+
+    for (const item of output) {
+      if (item?.type !== "message") continue;
+
+      for (const content of item?.content || []) {
+        for (const annotation of content?.annotations || []) {
+          if (annotation?.type !== "url_citation") continue;
+
+          const citation =
+            annotation?.url_citation || annotation;
+
+          if (!citation?.url) continue;
+
+          if (!sources.some((x) => x.url === citation.url)) {
+            sources.push({
+              url: citation.url,
+              title: citation.title || undefined,
+            });
+          }
+        }
+      }
+    }
+
+    const answer = response?.output_text?.trim();
+    if (!answer) return;
+
+    const { error } = await supabase
+      .from("web_knowledge")
+      .insert({
+        chat_id: chatId,
+        query,
+        answer,
+        sources,
+        verified_at: new Date().toISOString(),
+      });
+
+    if (error) {
+      console.error("saveWebKnowledge error:", error);
+    }
+  } catch (error) {
+    console.error("saveWebKnowledge failed:", error);
+  }
+}
+
 async function getSelectedModel(chatId: number) {
   const facts = await getLongTermFacts(chatId);
   const saved = facts.find(
@@ -696,7 +761,7 @@ export async function POST(req: Request) {
       if (!text.trim()) {
         content.unshift({
           type: "input_text",
-          text: "Посмотри фото и кратко скажи, что на нём видно и что важно по теме DJI, Autel, аккумуляторов, ошибок или ремонта.",
+          text: "Посмотри фото автомобиля, детали, приборной панели или узла и кратко скажи, что видно. Отдельно укажи важные признаки неисправности, повреждения, ошибки, маркировку детали или следы ремонта. Не придумывай то, чего на фото не видно.",
         });
       }
     }
@@ -785,7 +850,7 @@ export async function POST(req: Request) {
         },
       ],
       instructions: `
-Ты участник технической Telegram-группы по DJI, Mavic, Matrice и Autel.
+Ты опытный AI-помощник автосервиса и автомеханика. Помогаешь диагностировать автомобили по симптомам, кодам ошибок, фото, видео и описанию владельца.
 
 Отвечай как обычный опытный человек, а не как ИИ или справочник.
 
@@ -822,7 +887,18 @@ export async function POST(req: Request) {
 По умолчанию отвечай максимально коротко: 3-5 предложений.
 Подробности давай только если пользователь просит.
 
-Технические темы: DJI, Mavic 3, Mavic 3T, Mavic 4, Matrice 4T, Autel, аккумуляторы, BMS, прошивки, ремонт и диагностика.
+Основные темы: автомобили, двигатель, АКПП и МКПП, электрика, электроника, CAN, диагностика OBD-II, ошибки DTC, подвеска, тормоза, рулевое управление, охлаждение, кондиционер, топливная система, аккумулятор, генератор, стартер, мультимедиа, кузов, запчасти, ремонт и техническое обслуживание.
+
+Работай как опытный диагност:
+- сначала учитывай марку, модель, год, двигатель и пробег, если они известны;
+- по симптомам давай наиболее вероятные причины в порядке вероятности;
+- объясняй, что проверить сначала;
+- отличай подтвержденный факт от предположения;
+- не утверждай точный диагноз без достаточных данных;
+- если нужен код ошибки, напряжение, давление, температура или другой замер — скажи какой;
+- при необходимости используй интернет-поиск для актуальной технической информации;
+- предпочитай официальные руководства, сервисную документацию и надежные технические источники;
+- отвечай по-русски, кратко, понятно и по делу.
 `,
       input: [
         ...(factsText
