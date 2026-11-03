@@ -1,4 +1,63 @@
 import OpenAI from "openai";
+import { createClient } from "@supabase/supabase-js";
+
+
+function getSupabase() {
+  const url = process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_SECRET_KEY;
+
+  if (!url || !key) {
+    return null;
+  }
+
+  return createClient(url, key);
+}
+
+async function getRecentMessages(chatId: number, limit = 12) {
+  const supabase = getSupabase();
+
+  if (!supabase) return [];
+
+  const { data, error } = await supabase
+    .from("telegram_messages")
+    .select("role, content, created_at")
+    .eq("chat_id", chatId)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+
+  if (error) {
+    console.error("Supabase read error:", error);
+    return [];
+  }
+
+  return (data || []).reverse();
+}
+
+async function saveMemoryMessage(params: {
+  chatId: number;
+  userId?: number;
+  username?: string;
+  role: "user" | "assistant";
+  content: string;
+}) {
+  const supabase = getSupabase();
+
+  if (!supabase) return;
+
+  const { error } = await supabase
+    .from("telegram_messages")
+    .insert({
+      chat_id: params.chatId,
+      user_id: params.userId ?? null,
+      username: params.username ?? null,
+      role: params.role,
+      content: params.content,
+    });
+
+  if (error) {
+    console.error("Supabase save error:", error);
+  }
+}
 
 async function sendMessage(chatId: number, text: string) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -160,6 +219,8 @@ export async function POST(req: Request) {
       return Response.json({ ok: true });
     }
 
+    const memory = await getRecentMessages(chatId, 12);
+
     const response = await openai.responses.create({
       model: "gpt-6-luna",
       instructions: `
@@ -203,8 +264,12 @@ export async function POST(req: Request) {
 Технические темы: DJI, Mavic 3, Mavic 3T, Mavic 4, Matrice 4T, Autel, аккумуляторы, BMS, прошивки, ремонт и диагностика.
 `,
       input: [
+        ...memory.map((item: any) => ({
+          role: item.role === "assistant" ? "assistant" as const : "user" as const,
+          content: item.content,
+        })),
         {
-          role: "user",
+          role: "user" as const,
           content,
         },
       ],
@@ -213,6 +278,28 @@ export async function POST(req: Request) {
     const answer =
       response.output_text?.trim() ||
       "Не удалось сформировать ответ.";
+
+    const memoryText =
+      text.trim() ||
+      (Array.isArray(message.photo) && message.photo.length > 0
+        ? "[Пользователь прислал фото]"
+        : message.video?.file_id
+          ? "[Пользователь прислал видео]"
+          : "[Сообщение]");
+
+    await saveMemoryMessage({
+      chatId,
+      userId: message.from?.id,
+      username: message.from?.username,
+      role: "user",
+      content: memoryText,
+    });
+
+    await saveMemoryMessage({
+      chatId,
+      role: "assistant",
+      content: answer,
+    });
 
     await sendMessage(chatId, answer);
   } catch (error: any) {

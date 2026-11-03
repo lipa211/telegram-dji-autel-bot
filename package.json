@@ -21,6 +21,7 @@
   },
   "homepage": "https://github.com/lipa211/telegram-dji-autel-bot#readme",
   "dependencies": {
+    "@supabase/supabase-js": "^2.118.0",
     "next": "^16.4.4",
     "openai": "^7.47.0",
     "react": "^19.3.1",
