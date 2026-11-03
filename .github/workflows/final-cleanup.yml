@@ -1,0 +1,55 @@
+name: Run final bot cleanup validation
+
+on:
+  push:
+    branches:
+      - bot-logic-refactor
+    paths:
+      - scripts/final_cleanup.py
+      - .github/workflows/final-cleanup.yml
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: bot-logic-refactor
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Apply final cleanup
+        run: python3 scripts/final_cleanup.py
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Remove temporary files
+        run: |
+          rm -f app/api/telegram/route.ts.before-final-cleanup
+          rm -f scripts/final_cleanup.py
+          rm -f .github/workflows/final-cleanup.yml
+
+      - name: Commit validated result
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          git commit -m "Finalize bot memory and response logic"
+          git push origin bot-logic-refactor
