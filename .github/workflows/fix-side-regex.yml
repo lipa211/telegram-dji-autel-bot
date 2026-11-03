@@ -1,0 +1,54 @@
+name: Validate Russian vehicle side parsing fix
+
+on:
+  push:
+    branches:
+      - bot-logic-refactor
+    paths:
+      - scripts/fix_side_regex.py
+      - .github/workflows/fix-side-regex.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: bot-logic-refactor
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Apply fix
+        run: python3 scripts/fix_side_regex.py
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Remove temporary files
+        run: |
+          rm -f scripts/fix_side_regex.py
+          rm -f .github/workflows/fix-side-regex.yml
+
+      - name: Commit validated result
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          git commit -m "Fix Russian vehicle side parsing"
+          git push origin bot-logic-refactor
