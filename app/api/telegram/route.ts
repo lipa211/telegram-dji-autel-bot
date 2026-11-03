@@ -666,6 +666,60 @@ async function sendMessage(chatId: number, text: string) {
 }
 
 
+
+type VisualGuideItem = {
+  photo: string;
+  caption: string;
+};
+
+function getVisualGuideForCase(
+  facts: Record<string, string>,
+  userText: string
+): VisualGuideItem[] {
+  const make = (facts.car_make || "").toLowerCase();
+  const model = (facts.car_model || "").toLowerCase();
+  const year = (facts.car_year || "").toLowerCase();
+  const text = userText.toLowerCase();
+
+  const baseUrl =
+    process.env.NEXT_PUBLIC_APP_URL ||
+    "https://telegram-dji-autel-bot-2.vercel.app";
+
+  // Kia Sportage 2010 — пропадает звук
+  const isSportage2010 =
+    make.includes("kia") &&
+    model.includes("sportage") &&
+    year.includes("2010");
+
+  const isAudioProblem =
+    text.includes("звук") ||
+    text.includes("магнитол") ||
+    text.includes("динамик") ||
+    text.includes("усилител");
+
+  if (isSportage2010 && isAudioProblem) {
+    return [
+      {
+        photo: `${baseUrl}/guides/sportage2010/audio/diagram.png`,
+        caption:
+          "Схема проверки: звук есть до запуска → после запуска пропал.",
+      },
+      {
+        photo: `${baseUrl}/guides/sportage2010/audio/fuse-box.jpg`,
+        caption:
+          "Блок предохранителей. Проверяй AUDIO/AMP мультиметром, а не только визуально.",
+      },
+      {
+        photo: `${baseUrl}/guides/sportage2010/audio/amplifier.jpg`,
+        caption:
+          "Если отдельный усилитель установлен: проверяй питание, массу, REMOTE и MUTE в момент пропадания звука.",
+      },
+    ];
+  }
+
+  return [];
+}
+
 async function sendPhoto(
   chatId: number,
   photo: string,
@@ -1927,6 +1981,31 @@ export async function POST(req: Request) {
         "assistant",
         answer
       );
+    }
+
+    if (diagnosticCar) {
+      const visualFacts = await getCarFacts(diagnosticCar.id);
+
+      const visualMap = Object.fromEntries(
+        visualFacts.map(
+          (f: any) => [f.fact_key, f.fact_value]
+        )
+      );
+
+      const visualGuide = getVisualGuideForCase(
+        visualMap,
+        text
+      );
+
+      if (visualGuide.length) {
+        await sendMediaGroup(
+          chatId,
+          visualGuide.map((item) => ({
+            photo: item.photo,
+            caption: item.caption,
+          }))
+        );
+      }
     }
 
     if (diagnosticCar && text && answer) {
