@@ -60,6 +60,15 @@ async function saveMemoryMessage(params: {
 }
 
 
+async function getSelectedModel(chatId: number) {
+  const facts = await getLongTermFacts(chatId);
+  const saved = facts.find(
+    (f: any) => f.fact_key === "openai_model"
+  );
+
+  return saved?.fact_value || "gpt-6-luna";
+}
+
 async function getLongTermFacts(chatId: number) {
   const supabase = getSupabase();
   if (!supabase) return [];
@@ -250,10 +259,47 @@ export async function POST(req: Request) {
   const chatId = message.chat.id;
   const text = message.text ?? message.caption ?? "";
 
-  if (text === "/model") {
+  if (text === "/model" || text.startsWith("/model ")) {
+    const arg = text.slice(6).trim();
+
+    if (!arg) {
+      const facts = await getLongTermFacts(chatId);
+      const saved = facts.find(
+        (f: any) => f.fact_key === "openai_model"
+      );
+
+      await sendMessage(
+        chatId,
+        `Текущая модель OpenAI: ${saved?.fact_value || "gpt-6-luna"}`
+      );
+
+      return Response.json({ ok: true });
+    }
+
+    if (arg.toLowerCase() === "reset") {
+      const supabase = getSupabase();
+
+      if (supabase) {
+        await supabase
+          .from("telegram_facts")
+          .delete()
+          .eq("chat_id", chatId)
+          .eq("fact_key", "openai_model");
+      }
+
+      await sendMessage(
+        chatId,
+        "Модель сброшена на gpt-6-luna"
+      );
+
+      return Response.json({ ok: true });
+    }
+
+    await saveFact(chatId, "openai_model", arg);
+
     await sendMessage(
       chatId,
-      "Текущая модель OpenAI: gpt-6-luna"
+      `Модель переключена на: ${arg}`
     );
 
     return Response.json({ ok: true });
@@ -730,7 +776,7 @@ export async function POST(req: Request) {
       .join("\n");
 
     const response = await openai.responses.create({
-      model: "gpt-6-luna",
+      model: await getSelectedModel(chatId),
       instructions: `
 Ты участник технической Telegram-группы по DJI, Mavic, Matrice и Autel.
 
