@@ -250,6 +250,51 @@ export async function POST(req: Request) {
   const chatId = message.chat.id;
   const text = message.text ?? message.caption ?? "";
 
+  if (text === "/status") {
+    const statusLines: string[] = [];
+
+    statusLines.push("Бот: работает");
+
+    const supabase = getSupabase();
+
+    if (!supabase) {
+      statusLines.push("Supabase: недоступен");
+    } else {
+      const { error } = await supabase
+        .from("telegram_facts")
+        .select("id")
+        .limit(1);
+
+      statusLines.push(
+        error ? "Supabase: ошибка" : "Supabase: работает"
+      );
+    }
+
+    try {
+      const facts = await getLongTermFacts(chatId);
+      statusLines.push(`Память: работает, фактов ${facts.length}`);
+    } catch (error) {
+      console.error("status memory error:", error);
+      statusLines.push("Память: ошибка");
+    }
+
+    statusLines.push(
+      process.env.OPENAI_API_KEY
+        ? "OpenAI API: ключ подключён"
+        : "OpenAI API: ключ отсутствует"
+    );
+
+    statusLines.push(
+      process.env.TELEGRAM_BOT_TOKEN
+        ? "Telegram: токен подключён"
+        : "Telegram: токен отсутствует"
+    );
+
+    await sendMessage(chatId, statusLines.join("\n"));
+
+    return Response.json({ ok: true });
+  }
+
   if (text === "/help") {
     await sendMessage(
       chatId,
