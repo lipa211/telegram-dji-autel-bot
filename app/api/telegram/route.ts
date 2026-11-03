@@ -998,6 +998,99 @@ export async function POST(req: Request) {
     return Response.json({ ok: true });
   }
 
+  if (text.startsWith("/repair")) {
+    const activeCar = await getActiveCar(chatId);
+
+    if (!activeCar) {
+      await sendMessage(
+        chatId,
+        "Сначала выбери автомобиль: /cars"
+      );
+      return Response.json({ ok: true });
+    }
+
+    const raw = text.slice("/repair".length).trim().toLowerCase();
+
+    const statuses: Record<string, string> = {
+      "new": "Новая проблема",
+      "новая": "Новая проблема",
+
+      "diagnostic": "Диагностика",
+      "диагностика": "Диагностика",
+
+      "parts": "Ожидает запчасти",
+      "запчасти": "Ожидает запчасти",
+
+      "repair": "В ремонте",
+      "ремонт": "В ремонте",
+
+      "done": "Готово",
+      "готово": "Готово",
+    };
+
+    if (!raw) {
+      const facts = await getCarFacts(activeCar.id);
+
+      const status = facts.find(
+        (f: any) => f.fact_key === "service_status"
+      )?.fact_value;
+
+      await sendMessage(
+        chatId,
+        status
+          ? `Статус автомобиля №${activeCar.slot}: ${status}`
+          : `Статус автомобиля №${activeCar.slot}: не установлен`
+      );
+
+      return Response.json({ ok: true });
+    }
+
+    const status = statuses[raw];
+
+    if (!status) {
+      await sendMessage(
+        chatId,
+        [
+          "Доступные статусы:",
+          "/repair new",
+          "/repair diagnostic",
+          "/repair parts",
+          "/repair repair",
+          "/repair done",
+        ].join("\n")
+      );
+
+      return Response.json({ ok: true });
+    }
+
+    await saveCarFact(
+      activeCar.id,
+      "service_status",
+      status
+    );
+
+    const facts = await getCarFacts(activeCar.id);
+
+    const mileage = facts.find(
+      (f: any) => f.fact_key === "mileage"
+    )?.fact_value;
+
+    await saveServiceEvent(
+      chatId,
+      "service_status",
+      status,
+      mileage,
+      activeCar.id
+    );
+
+    await sendMessage(
+      chatId,
+      `Статус автомобиля №${activeCar.slot}: ${status}`
+    );
+
+    return Response.json({ ok: true });
+  }
+
   if (text === "/car add") {
     const car = await createCar(chatId);
 
@@ -1271,6 +1364,7 @@ export async function POST(req: Request) {
       parts: "Детали",
       repair_cost: "Стоимость",
       diagnostic_summary: "Итог диагностики",
+      service_status: "Статус",
     };
 
     const carName =
@@ -1333,6 +1427,7 @@ export async function POST(req: Request) {
       ["dtc_codes", "Ошибки"],
       ["current_problem", "Текущая неисправность"],
       ["repair_history", "Последний ремонт"],
+      ["service_status", "Статус ремонта"],
     ];
 
     const lines = fields
