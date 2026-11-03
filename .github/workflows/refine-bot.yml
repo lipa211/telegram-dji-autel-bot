@@ -1,0 +1,55 @@
+name: Run second-pass bot validation
+
+on:
+  push:
+    branches:
+      - bot-logic-refactor
+    paths:
+      - scripts/refine_bot.py
+      - .github/workflows/refine-bot.yml
+
+permissions:
+  contents: write
+
+jobs:
+  refine-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: bot-logic-refactor
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Apply second-pass refinement
+        run: python3 scripts/refine_bot.py
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Remove temporary files
+        run: |
+          rm -f app/api/telegram/route.ts.before-second-pass
+          rm -f scripts/refine_bot.py
+          rm -f .github/workflows/refine-bot.yml
+
+      - name: Commit validated result
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          git commit -m "Refine bot domain routing and memory logic"
+          git push origin bot-logic-refactor
