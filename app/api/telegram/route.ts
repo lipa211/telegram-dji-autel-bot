@@ -615,29 +615,50 @@ ${assistantText}`,
 
 
 function cleanTelegramText(text: string) {
-  return text
-    // [Название](https://site.ru/page) -> Название — https://site.ru/page
-    .replace(
-      /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
-      (_match, label, url) => {
-        const cleanUrl = String(url)
-          .replace(/([?&])utm_source=openai(&?)/g, (_m, sep, tail) =>
-            tail ? sep : ""
-          )
-          .replace(/[?&]$/, "");
+  const links: string[] = [];
 
-        return `${label} — ${cleanUrl}`;
-      }
-    )
+  let result = text.replace(
+    /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
+    (_match, label, rawUrl) => {
+      const url = String(rawUrl)
+        .replace(/([?&])utm_source=openai(&?)/g, (_m, sep, tail) =>
+          tail ? sep : ""
+        )
+        .replace(/[?&]$/, "");
 
-    // Убираем оставшийся tracking OpenAI из обычных URL
-    .replace(
-      /([?&])utm_source=openai(?=&|\s|$)/g,
-      ""
-    )
+      const safeLabel = String(label)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
 
-    // Убираем двойные пустые скобки вокруг ссылок
-    .replace(/\(\s*(https?:\/\/[^)]+)\s*\)/g, "$1");
+      const safeUrl = url
+        .replace(/&/g, "&amp;")
+        .replace(/"/g, "&quot;");
+
+      const host = safeLabel || "Источник";
+      const placeholder = `__TG_LINK_${links.length}__`;
+
+      links.push(
+        `<a href="${safeUrl}">${host}</a>`
+      );
+
+      return placeholder;
+    }
+  );
+
+  result = result
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+
+  links.forEach((link, index) => {
+    result = result.replace(
+      `__TG_LINK_${index}__`,
+      link
+    );
+  });
+
+  return result;
 }
 
 async function sendMessage(chatId: number, text: string) {
@@ -649,6 +670,10 @@ async function sendMessage(chatId: number, text: string) {
     body: JSON.stringify({
       chat_id: chatId,
       text: cleanTelegramText(text),
+      parse_mode: "HTML",
+      link_preview_options: {
+        is_disabled: true,
+      },
     }),
   });
 }
