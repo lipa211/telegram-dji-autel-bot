@@ -1522,6 +1522,34 @@ export async function POST(req: Request) {
 
   const update = await req.json();
 
+  // Защита от повторной доставки одного Telegram update.
+  // Telegram может повторить webhook, пока генерируется длинный ответ/изображение.
+  const telegramUpdateId = Number(update?.update_id);
+
+  if (Number.isFinite(telegramUpdateId)) {
+    const dedupeSupabase = getSupabase();
+
+    if (dedupeSupabase) {
+      const { error: dedupeError } = await dedupeSupabase
+        .from("telegram_processed_updates")
+        .insert({
+          update_id: telegramUpdateId,
+        });
+
+      if (dedupeError) {
+        // PostgreSQL unique_violation:
+        // этот update уже обрабатывался.
+        if (dedupeError.code === "23505") {
+          console.log("Duplicate Telegram update ignored:", telegramUpdateId);
+          return Response.json({ ok: true });
+        }
+
+        console.error("Telegram update dedupe error:", dedupeError);
+      }
+    }
+  }
+
+
   const incoming =
     update?.message ??
     update?.edited_message ??
