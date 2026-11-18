@@ -461,7 +461,7 @@ async function createCar(chatId: number) {
     console.error("createCar atomic error:", error);
     return null;
   }
-  return data;
+  return data as { id: number; slot: number; is_active: boolean } | null;
 }
 
 async function deleteCar(chatId: number, slot: number) {
@@ -536,7 +536,7 @@ async function selectCar(chatId: number, slot: number) {
     console.error("selectCar atomic error:", error);
     return null;
   }
-  return data;
+  return data as { id: number; slot: number; is_active: boolean } | null;
 }
 
 async function buildDiagnosticSummary(
