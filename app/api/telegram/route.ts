@@ -742,10 +742,10 @@ function parseExplicitVehicleFacts(text: string) {
   // Preserve the actual location rather than matching the first occurrence
   // of "правый" or "левый" anywhere in a long user message.
   const sides: Array<{ code: VehicleSideCode; label: string; pattern: RegExp }> = [
-    { code: "rear_right", label: "задняя правая", pattern: /(?:задн[а-яё]*[\s,/-]{1,16}прав[а-яё]*|прав[а-яё]*[\s,/-]{1,16}задн[а-яё]*|справа\s+сзади|сзади\s+справа)/gi },
-    { code: "rear_left", label: "задняя левая", pattern: /(?:задн[а-яё]*[\s,/-]{1,16}лев[а-яё]*|лев[а-яё]*[\s,/-]{1,16}задн[а-яё]*|слева\s+сзади|сзади\s+слева)/gi },
-    { code: "front_right", label: "передняя правая", pattern: /(?:передн[а-яё]*[\s,/-]{1,16}прав[а-яё]*|прав[а-яё]*[\s,/-]{1,16}передн[а-яё]*|справа\s+спереди|спереди\s+справа)/gi },
-    { code: "front_left", label: "передняя левая", pattern: /(?:передн[а-яё]*[\s,/-]{1,16}лев[а-яё]*|лев[а-яё]*[\s,/-]{1,16}передн[а-яё]*|слева\s+спереди|спереди\s+слева)/gi },
+    { code: "rear_right", label: "задняя правая", pattern: /(?:задн[а-яё]*[\s,]{1,16}прав[а-яё]*|прав[а-яё]*[\s,]{1,16}задн[а-яё]*|справа\s+сзади|сзади\s+справа)/gi },
+    { code: "rear_left", label: "задняя левая", pattern: /(?:задн[а-яё]*[\s,]{1,16}лев[а-яё]*|лев[а-яё]*[\s,]{1,16}задн[а-яё]*|слева\s+сзади|сзади\s+слева)/gi },
+    { code: "front_right", label: "передняя правая", pattern: /(?:передн[а-яё]*[\s,]{1,16}прав[а-яё]*|прав[а-яё]*[\s,]{1,16}передн[а-яё]*|справа\s+спереди|спереди\s+справа)/gi },
+    { code: "front_left", label: "передняя левая", pattern: /(?:передн[а-яё]*[\s,]{1,16}лев[а-яё]*|лев[а-яё]*[\s,]{1,16}передн[а-яё]*|слева\s+спереди|спереди\s+слева)/gi },
   ];
   const matches = sides.flatMap((side) =>
     [...text.matchAll(side.pattern)].map((match) => ({
