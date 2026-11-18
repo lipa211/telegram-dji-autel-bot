@@ -1,5 +1,5 @@
 import { normalizeFactKey, CAR_FACT_KEYS } from "../../../lib/fact-keys";
-import { parseExplicitVehicleFacts, deriveVehicleRepairState, composeRepairAnswer } from "../../../lib/vehicle-logic";
+import { parseExplicitVehicleFacts, deriveVehicleRepairState, composeRepairAnswer, isAmbiguousDriveMention } from "../../../lib/vehicle-logic";
 import type { VehicleRepairState } from "../../../lib/vehicle-logic";
 import OpenAI from "openai";
 import { createClient } from "@supabase/supabase-js";
@@ -1771,6 +1771,8 @@ export async function POST(req: Request) {
       if (typeof fact?.key !== "string" || typeof fact?.value !== "string") continue;
       const key = fact.key.toLowerCase().trim();
       const value = fact.value.trim();
+      // AI extraction must not convert a comparison into a stored drivetrain.
+      if (key === "drive" && isAmbiguousDriveMention(text)) continue;
       if (allowedExtractedKeys.has(key) && value) factByKey.set(key, { key, value });
     }
     for (const [key, value] of Object.entries(explicitVehicleFacts)) {
