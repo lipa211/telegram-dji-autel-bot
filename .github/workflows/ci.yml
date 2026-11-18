@@ -1,0 +1,30 @@
+name: Validate application
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - fix/telegram-webhook-safety-2026-11-18
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Type-check
+        run: npx tsc --noEmit
+      - name: Build Next.js
+        run: npm run build
