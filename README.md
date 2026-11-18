@@ -5,17 +5,18 @@ Next.js Telegram webhook bot with OpenAI and Supabase memory.
 ## Required environment variables
 - `TELEGRAM_BOT_TOKEN`: Telegram bot token
 - `TELEGRAM_WEBHOOK_SECRET`: nonempty secret sent by Telegram in `X-Telegram-Bot-Api-Secret-Token`
+- `TELEGRAM_WEBHOOK_URL`: exact HTTPS webhook address ending in `/api/telegram`
 - `OPENAI_API_KEY`: OpenAI API key
 - `SUPABASE_URL`: Supabase project URL
 - `SUPABASE_SECRET_KEY`: server-side secret key; do not expose to the browser
 
 ## Deploy
 1. Install dependencies with `npm ci`, then run `npm run build`.
-2. Apply `supabase/migrations/20261118_telegram_processed_updates.sql` in the Supabase SQL editor.
+2. Apply both SQL migrations in `supabase/migrations/` in chronological order in the Supabase SQL editor.
 3. Set the environment variables in the deployment platform.
 4. Deploy the application.
 5. Configure the Telegram webhook via authenticated `POST /api/setup-webhook` with `Authorization: Bearer <TELEGRAM_WEBHOOK_SECRET>`.
-6. Verify the webhook URL and pending updates via `GET /api/webhook-info`.
+6. Verify the webhook URL and pending updates via authenticated `GET /api/webhook-info` with the same Bearer secret.
 
 ## Webhook safety
 - Invalid webhook secret: HTTP 401; missing configured secret: HTTP 503.
@@ -50,3 +51,10 @@ Do not deploy to production until database migration and live webhook tests are 
 - Verify a user command /set side = ... updates only the selected car, and changing active cars keeps their facts separate.
 
 These are regression scenarios for live validation, not a record of completed end-to-end tests.
+
+## Database safety
+- Both SQL migrations must be applied before deploying code using atomic car RPCs.
+- `create_car_atomic` and `select_car_atomic` serialize same-chat changes and are available only to Supabase's `service_role`.
+- Set `TELEGRAM_WEBHOOK_URL` explicitly; never derive it from an incoming Host header.
+- Run `npm test` and `npm run build` in CI before merging.
+- CI validates source logic, but it cannot validate real Telegram, OpenAI, or Supabase credentials without a staging environment.
