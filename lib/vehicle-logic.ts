@@ -42,8 +42,8 @@ export function parseExplicitVehicleFacts(text: string) {
   if (has2wd && has4wd) {
     // Comparison ("2WD или 4WD?") is not a confirmed drive.
     // A clear correction ("не 4WD, а 2WD") is an exception.
-    const deny4 = /\bне\s*(?:4\s*wd|полный\s+привод)\b/i.test(text);
-    const deny2 = /\bне\s*(?:2\s*wd|передний\s+привод)\b/i.test(text);
+    const deny4 = /не\s*(?:4\s*wd|полный\s+привод)\b/i.test(text);
+    const deny2 = /не\s*(?:2\s*wd|передний\s+привод)\b/i.test(text);
     if (deny4 !== deny2) result.drive = deny4 ? "2WD" : "4WD";
   }
 
@@ -185,12 +185,12 @@ export function isAmbiguousDriveMention(text: string): boolean {
 }
 
 export function isAmbiguousSideMention(text: string): boolean {
-  const left = /(?:\bлев[а-яё]*\b|\bслева\b)/i.test(text);
-  const right = /(?:\bправ[а-яё]*\b|\bсправа\b)/i.test(text);
+  const left = /(?:лев[а-яё]*|слева)/i.test(text);
+  const right = /(?:прав[а-яё]*|справа)/i.test(text);
   if (!left || !right) return false;
 
   // Explicit corrections carry an unambiguous intent despite mentioning both.
-  const negatedLeft = /\bне\s+лев[а-яё]*\b/i.test(text);
-  const negatedRight = /\bне\s+прав[а-яё]*\b/i.test(text);
+  const negatedLeft = /не\s+лев[а-яё]*/i.test(text);
+  const negatedRight = /не\s+прав[а-яё]*/i.test(text);
   return negatedLeft === negatedRight;
 }
