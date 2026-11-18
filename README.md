@@ -38,3 +38,15 @@ Next.js Telegram webhook bot with OpenAI and Supabase memory.
 - [ ] Confirm car side (left/right) and known model details are preserved in a multi-turn dialog
 
 Do not deploy to production until database migration and live webhook tests are complete.
+
+## Vehicle-memory regression cases
+- Select car 1, save Kia Sportage / KM / 2WD / 2.0 / rear right; verify later question does not ask for those fields again.
+- Select car 2, save another vehicle; switch back to car 1 and verify no data from car 2 appears.
+- Write "задняя правая", "правая задняя", "сзади справа" and confirm rear-right; "передняя левая", "слева спереди" and confirm front-left.
+- Mention two different sides in one message; verify the deterministic parser does not overwrite the saved side.
+- Change an explicitly saved value (e.g. 4WD to 2WD) and verify the latest explicit message wins over automatic extraction.
+- Ask about a drone while a car is selected; verify car memory is unchanged.
+- Ask a diagnostic question with missing generation/drive; verify the useful diagnostic text is retained, with a warning before model-specific disassembly or torque values.
+- Verify a user command /set side = ... updates only the selected car, and changing active cars keeps their facts separate.
+
+These are regression scenarios for live validation, not a record of completed end-to-end tests.
