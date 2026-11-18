@@ -5,6 +5,7 @@ import {
   deriveVehicleRepairState,
   composeRepairAnswer,
   isAmbiguousDriveMention,
+  isAmbiguousSideMention,
 } from "../lib/vehicle-logic.ts";
 
 test("vehicle side is oriented along travel direction, not camera direction", () => {
@@ -88,4 +89,10 @@ test("comparisons of vehicle drives must not overwrite confirmed facts", () => {
   assert.equal(state.drive, "2WD");
   assert.equal(parseExplicitVehicleFacts("У меня не 4WD, а 2WD").drive, "2WD");
   assert.equal(parseExplicitVehicleFacts("Нет, это не 2WD, а 4WD").drive, "4WD");
+});
+
+test("side comparisons do not pollute known vehicle side", () => {
+  assert.equal(isAmbiguousSideMention("Сравни переднюю левую и заднюю правую"), true);
+  assert.equal(isAmbiguousSideMention("Не левая, а правая задняя"), false);
+  assert.equal(isAmbiguousSideMention("Задняя правая"), false);
 });
