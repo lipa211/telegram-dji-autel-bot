@@ -140,9 +140,9 @@ async function saveFact(
   chatId: number,
   key: string,
   value: string
-) {
+): Promise<boolean> {
   const supabase = getSupabase();
-  if (!supabase) return;
+  if (!supabase) return false;
 
   const { error } = await supabase
     .from("telegram_facts")
@@ -160,7 +160,9 @@ async function saveFact(
 
   if (error) {
     console.error("facts save error:", error);
+    return false;
   }
+  return true;
 }
 
 async function extractFacts(
@@ -354,9 +356,9 @@ async function saveCarFact(
   carId: number,
   key: string,
   value: string
-) {
+): Promise<boolean> {
   const supabase = getSupabase();
-  if (!supabase) return;
+  if (!supabase) return false;
 
   const { error } = await supabase
     .from("car_facts")
@@ -374,7 +376,9 @@ async function saveCarFact(
 
   if (error) {
     console.error("saveCarFact error:", error);
+    return false;
   }
+  return true;
 }
 
 
@@ -1491,11 +1495,15 @@ export async function POST(req: Request) {
         await sendMessage(chatId, "Для автомобильного факта сначала выбери автомобиль: /cars");
         return Response.json({ ok: true });
       }
-      await saveCarFact(activeCar.id, normalizedKey, value);
-      await sendMessage(chatId, `Запомнил в профиле автомобиля: ${rawKey} — ${value}`);
+      const stored = await saveCarFact(activeCar.id, normalizedKey, value);
+      await sendMessage(chatId, stored
+        ? `Запомнил в профиле автомобиля: ${rawKey} — ${value}`
+        : "Не удалось сохранить факт автомобиля. Повтори запрос позже.");
     } else {
-      await saveFact(chatId, normalizedKey, value);
-      await sendMessage(chatId, `Запомнил в общей памяти: ${rawKey} — ${value}`);
+      const stored = await saveFact(chatId, normalizedKey, value);
+      await sendMessage(chatId, stored
+        ? `Запомнил в общей памяти: ${rawKey} — ${value}`
+        : "Не удалось сохранить факт в памяти. Повтори запрос позже.");
     }
 
     return Response.json({ ok: true });
