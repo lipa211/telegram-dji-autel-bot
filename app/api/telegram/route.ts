@@ -1081,40 +1081,56 @@ function isDroneRequest(text: string) {
 export async function POST(req: Request) {
   const secret = req.headers.get("x-telegram-bot-api-secret-token");
 
-  if (
-    process.env.TELEGRAM_WEBHOOK_SECRET &&
-    secret !== process.env.TELEGRAM_WEBHOOK_SECRET
-  ) {
+  const expectedSecret = process.env.TELEGRAM_WEBHOOK_SECRET;
+  if (!expectedSecret) {
+    console.error("TELEGRAM_WEBHOOK_SECRET is not configured");
+    return new Response("Webhook is not configured", { status: 503 });
+  }
+  if (secret !== expectedSecret) {
     return new Response("Unauthorized", { status: 401 });
   }
 
-  const update = await req.json();
+  let update: any;
+  try {
+    update = await req.json();
+  } catch {
+    return new Response("Invalid JSON", { status: 400 });
+  }
 
-  // Защита от повторной доставки одного Telegram update.
-  // Telegram может повторить webhook, пока генерируется длинный ответ/изображение.
-  const telegramUpdateId = Number(update?.update_id);
+  // Telegram may redeliver updates while a request is processing.
+  // Never continue without durable deduplication: otherwise one update
+  // can produce multiple answers and duplicate memory records.
+  const telegramUpdateId = update?.update_id;
+  if (
+    typeof telegramUpdateId !== "number" ||
+    !Number.isSafeInteger(telegramUpdateId) ||
+    telegramUpdateId < 0
+  ) {
+    return new Response("Invalid update_id", { status: 400 });
+  }
 
-  if (Number.isFinite(telegramUpdateId)) {
-    const dedupeSupabase = getSupabase();
+  const dedupeSupabase = getSupabase();
+  if (!dedupeSupabase) {
+    console.error("Supabase is required for Telegram update deduplication");
+    return new Response("Deduplication unavailable", { status: 503 });
+  }
 
-    if (dedupeSupabase) {
-      const { error: dedupeError } = await dedupeSupabase
-        .from("telegram_processed_updates")
-        .insert({
-          update_id: telegramUpdateId,
-        });
+  try {
+    const { error: dedupeError } = await dedupeSupabase
+      .from("telegram_processed_updates")
+      .insert({ update_id: telegramUpdateId });
 
-      if (dedupeError) {
-        // PostgreSQL unique_violation:
-        // этот update уже обрабатывался.
-        if (dedupeError.code === "23505") {
-          console.log("Duplicate Telegram update ignored:", telegramUpdateId);
-          return Response.json({ ok: true });
-        }
-
-        console.error("Telegram update dedupe error:", dedupeError);
-      }
+    if (dedupeError?.code === "23505") {
+      console.log("Duplicate Telegram update ignored:", telegramUpdateId);
+      return Response.json({ ok: true });
     }
+    if (dedupeError) {
+      console.error("Telegram update dedupe error:", dedupeError);
+      return new Response("Deduplication failed", { status: 503 });
+    }
+  } catch (error) {
+    console.error("Telegram update dedupe exception:", error);
+    return new Response("Deduplication failed", { status: 503 });
   }
 
 
