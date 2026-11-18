@@ -24,6 +24,8 @@ jobs:
           cache: npm
       - name: Install locked dependencies
         run: npm ci
+      - name: Regression tests
+        run: npm test
       - name: Type-check
         run: npx tsc --noEmit
       - name: Build Next.js
