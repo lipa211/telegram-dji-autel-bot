@@ -739,21 +739,24 @@ function parseExplicitVehicleFacts(text: string) {
   const engine = engineMatch?.[1] || engineMatch?.[2];
   if (engine) result.engine = engine.replace(",", ".");
 
-  const pair = (a: string, b: string) =>
-    new RegExp(`(?:${a})[а-яё]*[^а-яёa-z0-9]{0,8}(?:${b})[а-яё]*|(?:${b})[а-яё]*[^а-яёa-z0-9]{0,8}(?:${a})[а-яё]*`, "i").test(text);
-
-  if (pair("задн", "прав")) {
-    result.side = "задняя правая";
-    result.sideCode = "rear_right";
-  } else if (pair("задн", "лев")) {
-    result.side = "задняя левая";
-    result.sideCode = "rear_left";
-  } else if (pair("передн", "прав")) {
-    result.side = "передняя правая";
-    result.sideCode = "front_right";
-  } else if (pair("передн", "лев")) {
-    result.side = "передняя левая";
-    result.sideCode = "front_left";
+  // Preserve the actual location rather than matching the first occurrence
+  // of "правый" or "левый" anywhere in a long user message.
+  const sides: Array<{ code: VehicleSideCode; label: string; pattern: RegExp }> = [
+    { code: "rear_right", label: "задняя правая", pattern: /(?:задн[а-яё]*[\s,/-]{1,16}прав[а-яё]*|прав[а-яё]*[\s,/-]{1,16}задн[а-яё]*|справа\s+сзади|сзади\s+справа)/gi },
+    { code: "rear_left", label: "задняя левая", pattern: /(?:задн[а-яё]*[\s,/-]{1,16}лев[а-яё]*|лев[а-яё]*[\s,/-]{1,16}задн[а-яё]*|слева\s+сзади|сзади\s+слева)/gi },
+    { code: "front_right", label: "передняя правая", pattern: /(?:передн[а-яё]*[\s,/-]{1,16}прав[а-яё]*|прав[а-яё]*[\s,/-]{1,16}передн[а-яё]*|справа\s+спереди|спереди\s+справа)/gi },
+    { code: "front_left", label: "передняя левая", pattern: /(?:передн[а-яё]*[\s,/-]{1,16}лев[а-яё]*|лев[а-яё]*[\s,/-]{1,16}передн[а-яё]*|слева\s+спереди|спереди\s+слева)/gi },
+  ];
+  const matches = sides.flatMap((side) =>
+    [...text.matchAll(side.pattern)].map((match) => ({
+      ...side, index: match.index ?? -1,
+    }))
+  ).sort((a, b) => a.index - b.index);
+  // When both sides are mentioned, don't silently overwrite the selected side.
+  const uniqueSides = new Set(matches.map((match) => match.code));
+  if (uniqueSides.size === 1 && matches[0]) {
+    result.side = matches[0].label;
+    result.sideCode = matches[0].code;
   }
 
   return result;
@@ -848,16 +851,16 @@ function composeRepairAnswer(answer: string, state: VehicleRepairState): string 
   const cleaned = cleanRepairAnswerForState(answer, state);
   const header = vehicleStateHeader(state);
 
+  // Missing profile details must not erase the actual diagnostic answer.
+  // This is especially important for general checks that do not require VIN.
   if (state.mode === "UNKNOWN") {
-    return `${header}\n\nДля точной инструкции сначала нужно определить недостающие данные.\n\nДостаточно прислать фото нужной стороны/узла и указать поколение или кузов и привод, если они известны. До подтверждения версии не применяй точную разборку, каталожные номера и моменты затяжки.`;
+    return `${header}\n\n${cleaned}\n\nПеред применением точных каталожных номеров и моментов затяжки уточни недостающие параметры автомобиля.`
+      .replace(/\n{3,}/g, "\n\n").trim();
   }
-
   if (state.mode === "PARTIAL") {
-    return `${header}\n\n${cleaned}\n\nТочные моменты затяжки, номер детали и отличия по двигателю нужно сверить после уточнения двигателя или по VIN.`
-      .replace(/\n{3,}/g, "\n\n")
-      .trim();
+    return `${header}\n\n${cleaned}\n\nЕсли деталь или момент затяжки зависит от двигателя, уточни двигатель или VIN.`
+      .replace(/\n{3,}/g, "\n\n").trim();
   }
-
   return `${header}\n\n${cleaned}`.replace(/\n{3,}/g, "\n\n").trim();
 }
 
@@ -2043,15 +2046,28 @@ export async function POST(req: Request) {
       ? await extractFacts(openai, text)
       : [];
 
-    const explicitVehicleFacts = parseExplicitVehicleFacts(text);
+    // Explicit, deterministic details have precedence over AI extraction.
+    // Never interpret a drone question as a car profile update.
+    const explicitVehicleFacts = vehicleContextEnabled
+      ? parseExplicitVehicleFacts(text)
+      : {};
+    const factByKey = new Map<string, { key: string; value: string }>();
+    const allowedExtractedKeys = new Set([
+      "car_make", "car_model", "car_year", "generation", "drive", "side",
+      "engine", "vin", "mileage", "license_plate", "transmission",
+      "dtc_codes", "current_problem", "repair_history", "parts", "repair_cost"
+    ]);
+    for (const fact of extractedFacts) {
+      if (typeof fact?.key !== "string" || typeof fact?.value !== "string") continue;
+      const key = fact.key.toLowerCase().trim();
+      const value = fact.value.trim();
+      if (allowedExtractedKeys.has(key) && value) factByKey.set(key, { key, value });
+    }
     for (const [key, value] of Object.entries(explicitVehicleFacts)) {
-      if (key === "sideCode") continue;
-      if (!extractedFacts.some((item: any) => item?.key?.toLowerCase() === key)) {
-        extractedFacts.push({ key, value });
-      }
+      if (key !== "sideCode") factByKey.set(key, { key, value });
     }
 
-    for (const fact of extractedFacts) {
+    for (const fact of factByKey.values()) {
       if (
         fact &&
         typeof fact.key === "string" &&
