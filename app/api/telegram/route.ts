@@ -1,4 +1,5 @@
 import { parseExplicitVehicleFacts, deriveVehicleRepairState, composeRepairAnswer } from "../../../lib/vehicle-logic";
+import type { VehicleRepairState } from "../../../lib/vehicle-logic";
 import OpenAI from "openai";
 import { createClient } from "@supabase/supabase-js";
 
