@@ -451,35 +451,18 @@ async function createCar(chatId: number) {
   const supabase = getSupabase();
   if (!supabase) return null;
 
-  const cars = await getCars(chatId);
-  const nextSlot =
-    cars.length > 0
-      ? Math.max(...cars.map((c: any) => c.slot)) + 1
-      : 1;
-
-  await supabase
-    .from("cars")
-    .update({ is_active: false })
-    .eq("chat_id", chatId);
-
+  // One database transaction handles slot allocation and active selection.
+  // No partial deactivation when creation fails.
   const { data, error } = await supabase
-    .from("cars")
-    .insert({
-      chat_id: chatId,
-      slot: nextSlot,
-      is_active: true,
-    })
-    .select("id,slot,is_active")
+    .rpc("create_car_atomic", { p_chat_id: chatId })
     .single();
 
   if (error) {
-    console.error("createCar error:", error);
+    console.error("createCar atomic error:", error);
     return null;
   }
-
   return data;
 }
-
 
 async function deleteCar(chatId: number, slot: number) {
   const supabase = getSupabase();
@@ -525,17 +508,18 @@ async function renameCar(
   const supabase = getSupabase();
   if (!supabase) return false;
 
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from("cars")
     .update({ display_name: name })
     .eq("chat_id", chatId)
-    .eq("slot", slot);
+    .eq("slot", slot)
+    .select("id")
+    .maybeSingle();
 
-  if (error) {
-    console.error("renameCar error:", error);
+  if (error || !data) {
+    if (error) console.error("renameCar error:", error);
     return false;
   }
-
   return true;
 }
 
@@ -543,36 +527,17 @@ async function selectCar(chatId: number, slot: number) {
   const supabase = getSupabase();
   if (!supabase) return null;
 
-  const { data: car, error } = await supabase
-    .from("cars")
-    .select("id,slot")
-    .eq("chat_id", chatId)
-    .eq("slot", slot)
+  // Concurrent select commands for the same chat cannot leave two active cars.
+  const { data, error } = await supabase
+    .rpc("select_car_atomic", { p_chat_id: chatId, p_slot: slot })
     .maybeSingle();
 
-  if (error || !car) {
-    if (error) console.error("selectCar find error:", error);
+  if (error) {
+    console.error("selectCar atomic error:", error);
     return null;
   }
-
-  await supabase
-    .from("cars")
-    .update({ is_active: false })
-    .eq("chat_id", chatId);
-
-  const { error: updateError } = await supabase
-    .from("cars")
-    .update({ is_active: true })
-    .eq("id", car.id);
-
-  if (updateError) {
-    console.error("selectCar update error:", updateError);
-    return null;
-  }
-
-  return car;
+  return data;
 }
-
 
 async function buildDiagnosticSummary(
   openai: any,
