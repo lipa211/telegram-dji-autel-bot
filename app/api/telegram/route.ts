@@ -666,17 +666,24 @@ async function sendMessage(chatId: number, text: string) {
   const cleaned = cleanTelegramText(text);
   if (!cleaned) return false;
 
+  // Telegram limits text messages to 4096 characters. Keep one answer per
+  // user update and leave room for a visible truncation notice if necessary.
+  const characters = Array.from(cleaned);
+  const outgoingText = characters.length > 4096
+    ? characters.slice(0, 3900).join("") + "\n\n[Ответ сокращён: превышен лимит Telegram]"
+    : cleaned;
+
   const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       chat_id: chatId,
-      text: cleaned,
+      text: outgoingText,
     }),
   });
 
   if (!response.ok) {
-    console.error("sendMessage error:", await response.text());
+    console.error("sendMessage error:", response.status, await response.text());
     return false;
   }
 
@@ -1029,9 +1036,12 @@ async function sendPhotoBuffer(
   if (!response.ok) {
     console.error(
       "sendPhotoBuffer error:",
+      response.status,
       await response.text()
     );
+    return false;
   }
+  return true;
 }
 
 async function telegramFileToDataUrl(fileId: string) {
@@ -2590,9 +2600,12 @@ export async function POST(req: Request) {
     });
 
     if (pendingDiagnosticImage && cleanTelegramText(answer).length <= 950) {
-      await sendPhotoBuffer(chatId, pendingDiagnosticImage, answer);
+      const photoSent = await sendPhotoBuffer(chatId, pendingDiagnosticImage, answer);
+      if (!photoSent) {
+        // A failed image upload must not swallow the diagnostic answer.
+        await sendMessage(chatId, answer);
+      }
     } else {
-      // Preserve the complete answer rather than silently truncating it.
       await sendMessage(chatId, answer);
     }
   } catch (error: any) {
