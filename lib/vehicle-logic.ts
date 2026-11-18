@@ -31,14 +31,20 @@ export function parseExplicitVehicleFacts(text: string) {
   const result: Record<string, string> = {};
 
   const generationMatch =
-    text.match(/\b(KM|SL)\b/) ||
+    text.match(/\b(KM|SL)\b/i) ||
     text.match(/(?:кузов|поколение|код кузова|sportage\s*(?:ii|2)?)[^a-zа-яё0-9]{0,8}\b(km|sl)\b/i);
   if (generationMatch) result.generation = (generationMatch[1] || "").toUpperCase();
 
-  if (/\b2wd\b/i.test(text) || lower.includes("передний привод")) {
-    result.drive = "2WD";
-  } else if (/\b4wd\b/i.test(text) || lower.includes("полный привод")) {
-    result.drive = "4WD";
+  const has2wd = /\b2\s*wd\b/i.test(text) || lower.includes("передний привод");
+  const has4wd = /\b4\s*wd\b/i.test(text) || lower.includes("полный привод");
+  if (has2wd && !has4wd) result.drive = "2WD";
+  if (has4wd && !has2wd) result.drive = "4WD";
+  if (has2wd && has4wd) {
+    // Comparison ("2WD или 4WD?") is not a confirmed drive.
+    // A clear correction ("не 4WD, а 2WD") is an exception.
+    const deny4 = /\bне\s*(?:4\s*wd|полный\s+привод)\b/i.test(text);
+    const deny2 = /\bне\s*(?:2\s*wd|передний\s+привод)\b/i.test(text);
+    if (deny4 !== deny2) result.drive = deny4 ? "2WD" : "4WD";
   }
 
   const engineMatch = text.match(/(?:двигател[ья]?|мотор|объ[её]м)[^\d]{0,12}(1[.,]6|2[.,]0|2[.,]4|2[.,]7|3[.,]3)|\b(1[.,]6|2[.,]0|2[.,]4|2[.,]7|3[.,]3)\s*(?:л|литр)/i);
@@ -170,3 +176,10 @@ export function composeRepairAnswer(answer: string, state: VehicleRepairState): 
   return `${header}\n\n${cleaned}`.replace(/\n{3,}/g, "\n\n").trim();
 }
 
+
+export function isAmbiguousDriveMention(text: string): boolean {
+  const lower = text.toLowerCase();
+  const both = (/\b2\s*wd\b/i.test(text) || lower.includes("передний привод")) &&
+    (/\b4\s*wd\b/i.test(text) || lower.includes("полный привод"));
+  return both && !parseExplicitVehicleFacts(text).drive;
+}
