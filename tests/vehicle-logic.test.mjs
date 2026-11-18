@@ -4,6 +4,7 @@ import {
   parseExplicitVehicleFacts,
   deriveVehicleRepairState,
   composeRepairAnswer,
+  isAmbiguousDriveMention,
 } from "../lib/vehicle-logic.ts";
 
 test("vehicle side is oriented along travel direction, not camera direction", () => {
@@ -76,4 +77,15 @@ test("a fresh saved side is retained if current request names no side", () => {
     engine:"2.0", side:"задняя правая",
   }, "Как заменить подшипник?");
   assert.equal(state.sideCode, "rear_right");
+});
+
+test("comparisons of vehicle drives must not overwrite confirmed facts", () => {
+  assert.equal(parseExplicitVehicleFacts("Для 2WD и 4WD разные ступицы?").drive, undefined);
+  assert.equal(isAmbiguousDriveMention("Для 2WD и 4WD разные ступицы?"), true);
+  const state = deriveVehicleRepairState({
+    car_model: "Sportage", generation: "KM", drive: "2WD", engine: "2.0"
+  }, "А для 2WD и 4WD одинаковые узлы?");
+  assert.equal(state.drive, "2WD");
+  assert.equal(parseExplicitVehicleFacts("У меня не 4WD, а 2WD").drive, "2WD");
+  assert.equal(parseExplicitVehicleFacts("Нет, это не 2WD, а 4WD").drive, "4WD");
 });
