@@ -183,3 +183,14 @@ export function isAmbiguousDriveMention(text: string): boolean {
     (/\b4\s*wd\b/i.test(text) || lower.includes("полный привод"));
   return both && !parseExplicitVehicleFacts(text).drive;
 }
+
+export function isAmbiguousSideMention(text: string): boolean {
+  const left = /(?:\bлев[а-яё]*\b|\bслева\b)/i.test(text);
+  const right = /(?:\bправ[а-яё]*\b|\bсправа\b)/i.test(text);
+  if (!left || !right) return false;
+
+  // Explicit corrections carry an unambiguous intent despite mentioning both.
+  const negatedLeft = /\bне\s+лев[а-яё]*\b/i.test(text);
+  const negatedRight = /\bне\s+прав[а-яё]*\b/i.test(text);
+  return negatedLeft === negatedRight;
+}
