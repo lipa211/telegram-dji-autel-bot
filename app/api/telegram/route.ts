@@ -965,8 +965,8 @@ export async function POST(req: Request) {
       is_topic_message: incoming?.is_topic_message,
       from_id: incoming?.from?.id,
       username: incoming?.from?.username,
-      text: incoming?.text,
-      caption: incoming?.caption,
+      text_length: incoming?.text?.length ?? 0,
+      caption_length: incoming?.caption?.length ?? 0,
       has_photo: Array.isArray(incoming?.photo),
       has_video: !!incoming?.video,
     })
