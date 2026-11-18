@@ -5,7 +5,10 @@ on:
   push:
     branches:
       - main
-      - fix/telegram-webhook-safety-2026-11-18
+
+concurrency:
+  group: validation-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
