@@ -5,46 +5,50 @@ export async function POST(req: Request) {
   if (!token || !secret) {
     return Response.json(
       { ok: false, error: "Telegram environment variables are missing" },
-      { status: 500 }
+      { status: 503 }
     );
   }
 
-  const auth = req.headers.get("authorization");
+  if (req.headers.get("authorization") !== `Bearer ${secret}`) {
+    return Response.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+  }
 
-  if (auth !== `Bearer ${secret}`) {
+  // Never register a Telegram webhook from an untrusted Host request header.
+  // The exact public URL must be explicitly configured by the deployer.
+  const configured = process.env.TELEGRAM_WEBHOOK_URL;
+  let url: URL;
+  try {
+    url = new URL(configured || "");
+    if (url.protocol !== "https:" || url.username || url.password ||
+        url.search || url.hash || url.pathname !== "/api/telegram") {
+      throw new Error("Invalid webhook URL");
+    }
+  } catch {
     return Response.json(
-      { ok: false, error: "Unauthorized" },
-      { status: 401 }
+      { ok: false, error: "Set TELEGRAM_WEBHOOK_URL to https://your-domain/api/telegram" },
+      { status: 503 }
     );
   }
 
-  const host = req.headers.get("host");
-
-  if (!host) {
-    return Response.json(
-      { ok: false, error: "Host not found" },
-      { status: 500 }
-    );
-  }
-
-  const url = `https://${host}/api/telegram`;
-
-  const res = await fetch(
-    `https://api.telegram.org/bot${token}/setWebhook`,
-    {
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${token}/setWebhook`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        url,
+        url: url.toString(),
         secret_token: secret,
+        allowed_updates: ["message"],
       }),
+    });
+
+    if (!res.ok) {
+      console.error("setWebhook Telegram error:", res.status);
+      return Response.json({ ok: false, error: "Telegram API unavailable" }, { status: 502 });
     }
-  );
-
-  const data = await res.json();
-
-  return Response.json({
-    ...data,
-    webhook_url: url,
-  });
+    const data = await res.json();
+    return Response.json({ ...data, webhook_url: url.toString() });
+  } catch (error) {
+    console.error("setWebhook request error:", error);
+    return Response.json({ ok: false, error: "Telegram API unavailable" }, { status: 502 });
+  }
 }

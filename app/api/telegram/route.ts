@@ -1,3 +1,6 @@
+import { normalizeFactKey, CAR_FACT_KEYS } from "../../../lib/fact-keys";
+import { parseExplicitVehicleFacts, deriveVehicleRepairState, composeRepairAnswer, isAmbiguousDriveMention, isAmbiguousSideMention } from "../../../lib/vehicle-logic";
+import type { VehicleRepairState } from "../../../lib/vehicle-logic";
 import OpenAI from "openai";
 import { createClient } from "@supabase/supabase-js";
 
@@ -139,9 +142,9 @@ async function saveFact(
   chatId: number,
   key: string,
   value: string
-) {
+): Promise<boolean> {
   const supabase = getSupabase();
-  if (!supabase) return;
+  if (!supabase) return false;
 
   const { error } = await supabase
     .from("telegram_facts")
@@ -159,7 +162,9 @@ async function saveFact(
 
   if (error) {
     console.error("facts save error:", error);
+    return false;
   }
+  return true;
 }
 
 async function extractFacts(
@@ -353,9 +358,9 @@ async function saveCarFact(
   carId: number,
   key: string,
   value: string
-) {
+): Promise<boolean> {
   const supabase = getSupabase();
-  if (!supabase) return;
+  if (!supabase) return false;
 
   const { error } = await supabase
     .from("car_facts")
@@ -373,7 +378,9 @@ async function saveCarFact(
 
   if (error) {
     console.error("saveCarFact error:", error);
+    return false;
   }
+  return true;
 }
 
 
@@ -444,35 +451,18 @@ async function createCar(chatId: number) {
   const supabase = getSupabase();
   if (!supabase) return null;
 
-  const cars = await getCars(chatId);
-  const nextSlot =
-    cars.length > 0
-      ? Math.max(...cars.map((c: any) => c.slot)) + 1
-      : 1;
-
-  await supabase
-    .from("cars")
-    .update({ is_active: false })
-    .eq("chat_id", chatId);
-
+  // One database transaction handles slot allocation and active selection.
+  // No partial deactivation when creation fails.
   const { data, error } = await supabase
-    .from("cars")
-    .insert({
-      chat_id: chatId,
-      slot: nextSlot,
-      is_active: true,
-    })
-    .select("id,slot,is_active")
+    .rpc("create_car_atomic", { p_chat_id: chatId })
     .single();
 
   if (error) {
-    console.error("createCar error:", error);
+    console.error("createCar atomic error:", error);
     return null;
   }
-
-  return data;
+  return data as { id: number; slot: number; is_active: boolean } | null;
 }
-
 
 async function deleteCar(chatId: number, slot: number) {
   const supabase = getSupabase();
@@ -518,17 +508,18 @@ async function renameCar(
   const supabase = getSupabase();
   if (!supabase) return false;
 
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from("cars")
     .update({ display_name: name })
     .eq("chat_id", chatId)
-    .eq("slot", slot);
+    .eq("slot", slot)
+    .select("id")
+    .maybeSingle();
 
-  if (error) {
-    console.error("renameCar error:", error);
+  if (error || !data) {
+    if (error) console.error("renameCar error:", error);
     return false;
   }
-
   return true;
 }
 
@@ -536,36 +527,17 @@ async function selectCar(chatId: number, slot: number) {
   const supabase = getSupabase();
   if (!supabase) return null;
 
-  const { data: car, error } = await supabase
-    .from("cars")
-    .select("id,slot")
-    .eq("chat_id", chatId)
-    .eq("slot", slot)
+  // Concurrent select commands for the same chat cannot leave two active cars.
+  const { data, error } = await supabase
+    .rpc("select_car_atomic", { p_chat_id: chatId, p_slot: slot })
     .maybeSingle();
 
-  if (error || !car) {
-    if (error) console.error("selectCar find error:", error);
+  if (error) {
+    console.error("selectCar atomic error:", error);
     return null;
   }
-
-  await supabase
-    .from("cars")
-    .update({ is_active: false })
-    .eq("chat_id", chatId);
-
-  const { error: updateError } = await supabase
-    .from("cars")
-    .update({ is_active: true })
-    .eq("id", car.id);
-
-  if (updateError) {
-    console.error("selectCar update error:", updateError);
-    return null;
-  }
-
-  return car;
+  return data as { id: number; slot: number; is_active: boolean } | null;
 }
-
 
 async function buildDiagnosticSummary(
   openai: any,
@@ -666,193 +638,34 @@ async function sendMessage(chatId: number, text: string) {
   const cleaned = cleanTelegramText(text);
   if (!cleaned) return false;
 
-  const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      chat_id: chatId,
-      text: cleaned,
-    }),
-  });
+  // Telegram limits text messages to 4096 characters. Keep one answer per
+  // user update and leave room for a visible truncation notice if necessary.
+  const characters = Array.from(cleaned);
+  const outgoingText = characters.length > 4096
+    ? characters.slice(0, 3900).join("") + "\n\n[Ответ сокращён: превышен лимит Telegram]"
+    : cleaned;
 
-  if (!response.ok) {
-    console.error("sendMessage error:", await response.text());
+  try {
+    const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: outgoingText,
+      }),
+    });
+    if (!response.ok) {
+      console.error("sendMessage error:", response.status, await response.text());
+      return false;
+    }
+    return true;
+  } catch (error) {
+    console.error("sendMessage network failure:", error);
     return false;
   }
-
-  return true;
 }
 
 
-
-type VehicleSideCode =
-  | "front_left"
-  | "front_right"
-  | "rear_left"
-  | "rear_right";
-
-type VehicleRepairState = {
-  mode: "UNKNOWN" | "PARTIAL" | "CONFIRMED";
-  model?: string;
-  generation?: string;
-  drive?: string;
-  engine?: string;
-  side?: string;
-  sideCode?: VehicleSideCode;
-  missing: string[];
-};
-
-function pickFact(
-  facts: Record<string, string>,
-  keys: string[]
-): string | undefined {
-  for (const key of keys) {
-    const value = facts[key];
-    if (typeof value === "string" && value.trim()) return value.trim();
-  }
-  return undefined;
-}
-
-function parseExplicitVehicleFacts(text: string) {
-  const lower = text.toLowerCase();
-  const result: Record<string, string> = {};
-
-  const generationMatch =
-    text.match(/\b(KM|SL)\b/) ||
-    text.match(/(?:кузов|поколение|код кузова|sportage\s*(?:ii|2)?)[^a-zа-яё0-9]{0,8}\b(km|sl)\b/i);
-  if (generationMatch) result.generation = (generationMatch[1] || "").toUpperCase();
-
-  if (/\b2wd\b/i.test(text) || lower.includes("передний привод")) {
-    result.drive = "2WD";
-  } else if (/\b4wd\b/i.test(text) || lower.includes("полный привод")) {
-    result.drive = "4WD";
-  }
-
-  const engineMatch = text.match(/(?:двигател[ья]?|мотор|объ[её]м)[^\d]{0,12}(1[.,]6|2[.,]0|2[.,]4|2[.,]7|3[.,]3)|\b(1[.,]6|2[.,]0|2[.,]4|2[.,]7|3[.,]3)\s*(?:л|литр)/i);
-  const engine = engineMatch?.[1] || engineMatch?.[2];
-  if (engine) result.engine = engine.replace(",", ".");
-
-  const pair = (a: string, b: string) =>
-    new RegExp(`(?:${a})[а-яё]*[^а-яёa-z0-9]{0,8}(?:${b})[а-яё]*|(?:${b})[а-яё]*[^а-яёa-z0-9]{0,8}(?:${a})[а-яё]*`, "i").test(text);
-
-  if (pair("задн", "прав")) {
-    result.side = "задняя правая";
-    result.sideCode = "rear_right";
-  } else if (pair("задн", "лев")) {
-    result.side = "задняя левая";
-    result.sideCode = "rear_left";
-  } else if (pair("передн", "прав")) {
-    result.side = "передняя правая";
-    result.sideCode = "front_right";
-  } else if (pair("передн", "лев")) {
-    result.side = "передняя левая";
-    result.sideCode = "front_left";
-  }
-
-  return result;
-}
-
-function deriveVehicleRepairState(
-  facts: Record<string, string>,
-  userText: string
-): VehicleRepairState {
-  // Current user message always overrides stale memory.
-  const explicit = parseExplicitVehicleFacts(userText);
-
-  const model = pickFact(facts, ["car_model", "vehicle_model", "model"]);
-  const generation = explicit.generation || pickFact(facts, ["generation", "body_code", "body", "car_generation"]);
-  const drive = explicit.drive || pickFact(facts, ["drive", "drive_type", "drivetrain", "car_drive"]);
-  const engine = explicit.engine || pickFact(facts, ["engine", "engine_volume", "engine_displacement", "motor"]);
-  const side = explicit.side || pickFact(facts, ["side", "repair_side", "wheel_side"]);
-
-  let sideCode = explicit.sideCode as VehicleSideCode | undefined;
-  if (!sideCode && side) {
-    const parsed = parseExplicitVehicleFacts(side);
-    sideCode = parsed.sideCode as VehicleSideCode | undefined;
-  }
-
-  const missing: string[] = [];
-  if (!generation) missing.push("поколение / кузов");
-  if (!drive) missing.push("привод");
-  if (!engine) missing.push("двигатель");
-
-  const mode: VehicleRepairState["mode"] =
-    !generation || !drive
-      ? "UNKNOWN"
-      : !engine
-        ? "PARTIAL"
-        : "CONFIRMED";
-
-  return { mode, model, generation, drive, engine, side, sideCode, missing };
-}
-
-function vehicleStateHeader(state: VehicleRepairState): string {
-  const values: string[] = [];
-  const add = (value?: string) => {
-    if (!value) return;
-    const normalized = value.toLowerCase().trim();
-    if (!values.some((x) => x.toLowerCase().trim() === normalized)) values.push(value.trim());
-  };
-
-  add(state.model);
-  add(state.generation);
-  add(state.drive);
-  if (state.engine) add(`двигатель ${state.engine}`);
-  add(state.side);
-
-  const confirmed = values.length ? values.join(", ") : "данные автомобиля";
-  if (state.mode === "UNKNOWN") {
-    return `Статус: версия автомобиля не определена.\nПодтверждено: ${confirmed}.\nТребует уточнения: ${state.missing.join(", ")}.`;
-  }
-  if (state.mode === "PARTIAL") {
-    return `Подтверждено: ${confirmed}.\nТребует уточнения: ${state.missing.join(", ")}.`;
-  }
-  return `Подтверждено: ${confirmed}.`;
-}
-
-function cleanRepairAnswerForState(text: string, state: VehicleRepairState): string {
-  let result = text.trim();
-
-  // Remove model-generated status headers; the application adds one canonical header.
-  result = result
-    .replace(/^\s*(?:Статус|Подтверждено|Требует уточнения):.*$/gim, "")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-
-  // Do not let the assistant re-ask facts that are already structurally known.
-  if (state.generation) {
-    result = result.replace(/^[^\n]*(?:уточн|определ|проверь)[^\n]*(?:поколен|кузов)[^\n]*$/gim, "");
-  }
-  if (state.drive) {
-    result = result.replace(/^[^\n]*(?:уточн|определ|проверь)[^\n]*(?:2wd|4wd|привод)[^\n]*$/gim, "");
-  }
-
-  if (!state.engine) {
-    result = result
-      .split("\n")
-      .filter((line) => !/\b\d{2,4}\s*(?:[–—-]\s*\d{2,4}\s*)?(?:н[·.\s]?м|nm)\b/i.test(line))
-      .join("\n");
-  }
-
-  return result.replace(/\n{3,}/g, "\n\n").trim();
-}
-
-function composeRepairAnswer(answer: string, state: VehicleRepairState): string {
-  const cleaned = cleanRepairAnswerForState(answer, state);
-  const header = vehicleStateHeader(state);
-
-  if (state.mode === "UNKNOWN") {
-    return `${header}\n\nДля точной инструкции сначала нужно определить недостающие данные.\n\nДостаточно прислать фото нужной стороны/узла и указать поколение или кузов и привод, если они известны. До подтверждения версии не применяй точную разборку, каталожные номера и моменты затяжки.`;
-  }
-
-  if (state.mode === "PARTIAL") {
-    return `${header}\n\n${cleaned}\n\nТочные моменты затяжки, номер детали и отличия по двигателю нужно сверить после уточнения двигателя или по VIN.`
-      .replace(/\n{3,}/g, "\n\n")
-      .trim();
-  }
-
-  return `${header}\n\n${cleaned}`.replace(/\n{3,}/g, "\n\n").trim();
-}
 
 async function generateDiagnosticImage(
   openai: any,
@@ -1018,19 +831,19 @@ async function sendPhotoBuffer(
     "diagnostic.png"
   );
 
-  const response = await fetch(
-    `https://api.telegram.org/bot${token}/sendPhoto`,
-    {
-      method: "POST",
-      body: form,
-    }
-  );
-
-  if (!response.ok) {
-    console.error(
-      "sendPhotoBuffer error:",
-      await response.text()
+  try {
+    const response = await fetch(
+      `https://api.telegram.org/bot${token}/sendPhoto`,
+      { method: "POST", body: form }
     );
+    if (!response.ok) {
+      console.error("sendPhotoBuffer error:", response.status, await response.text());
+      return false;
+    }
+    return true;
+  } catch (error) {
+    console.error("sendPhotoBuffer network failure:", error);
+    return false;
   }
 }
 
@@ -1081,40 +894,56 @@ function isDroneRequest(text: string) {
 export async function POST(req: Request) {
   const secret = req.headers.get("x-telegram-bot-api-secret-token");
 
-  if (
-    process.env.TELEGRAM_WEBHOOK_SECRET &&
-    secret !== process.env.TELEGRAM_WEBHOOK_SECRET
-  ) {
+  const expectedSecret = process.env.TELEGRAM_WEBHOOK_SECRET;
+  if (!expectedSecret) {
+    console.error("TELEGRAM_WEBHOOK_SECRET is not configured");
+    return new Response("Webhook is not configured", { status: 503 });
+  }
+  if (secret !== expectedSecret) {
     return new Response("Unauthorized", { status: 401 });
   }
 
-  const update = await req.json();
+  let update: any;
+  try {
+    update = await req.json();
+  } catch {
+    return new Response("Invalid JSON", { status: 400 });
+  }
 
-  // Защита от повторной доставки одного Telegram update.
-  // Telegram может повторить webhook, пока генерируется длинный ответ/изображение.
-  const telegramUpdateId = Number(update?.update_id);
+  // Telegram may redeliver updates while a request is processing.
+  // Never continue without durable deduplication: otherwise one update
+  // can produce multiple answers and duplicate memory records.
+  const telegramUpdateId = update?.update_id;
+  if (
+    typeof telegramUpdateId !== "number" ||
+    !Number.isSafeInteger(telegramUpdateId) ||
+    telegramUpdateId < 0
+  ) {
+    return new Response("Invalid update_id", { status: 400 });
+  }
 
-  if (Number.isFinite(telegramUpdateId)) {
-    const dedupeSupabase = getSupabase();
+  const dedupeSupabase = getSupabase();
+  if (!dedupeSupabase) {
+    console.error("Supabase is required for Telegram update deduplication");
+    return new Response("Deduplication unavailable", { status: 503 });
+  }
 
-    if (dedupeSupabase) {
-      const { error: dedupeError } = await dedupeSupabase
-        .from("telegram_processed_updates")
-        .insert({
-          update_id: telegramUpdateId,
-        });
+  try {
+    const { error: dedupeError } = await dedupeSupabase
+      .from("telegram_processed_updates")
+      .insert({ update_id: telegramUpdateId });
 
-      if (dedupeError) {
-        // PostgreSQL unique_violation:
-        // этот update уже обрабатывался.
-        if (dedupeError.code === "23505") {
-          console.log("Duplicate Telegram update ignored:", telegramUpdateId);
-          return Response.json({ ok: true });
-        }
-
-        console.error("Telegram update dedupe error:", dedupeError);
-      }
+    if (dedupeError?.code === "23505") {
+      console.log("Duplicate Telegram update ignored:", telegramUpdateId);
+      return Response.json({ ok: true });
     }
+    if (dedupeError) {
+      console.error("Telegram update dedupe error:", dedupeError);
+      return new Response("Deduplication failed", { status: 503 });
+    }
+  } catch (error) {
+    console.error("Telegram update dedupe exception:", error);
+    return new Response("Deduplication failed", { status: 503 });
   }
 
 
@@ -1136,8 +965,8 @@ export async function POST(req: Request) {
       is_topic_message: incoming?.is_topic_message,
       from_id: incoming?.from?.id,
       username: incoming?.from?.username,
-      text: incoming?.text,
-      caption: incoming?.caption,
+      text_length: incoming?.text?.length ?? 0,
+      caption_length: incoming?.caption?.length ?? 0,
       has_photo: Array.isArray(incoming?.photo),
       has_video: !!incoming?.video,
     })
@@ -1570,74 +1399,23 @@ export async function POST(req: Request) {
       return Response.json({ ok: true });
     }
 
-    const aliases: Record<string, string> = {
-      "вес батареи": "additional_battery_weight",
-      "реальное время полёта": "real_flight_time",
-      "время полёта": "flight_time",
-      "подключение батареи": "battery_connection",
-      "тип подключения": "connection_type",
-      "полезная нагрузка": "payload_weight",
-      "вес дрона": "drone_weight",
-      "прошивка": "firmware_version",
-      "дрон": "drone_model",
-    "марка": "car_make",
-    "модель": "car_model",
-    "год": "car_year",
-    "год выпуска": "car_year",
-    "двигатель": "engine",
-    "мотор": "engine",
-    "поколение": "generation",
-    "кузов": "generation",
-    "код кузова": "generation",
-    "привод": "drive",
-    "сторона": "side",
-    "vin": "vin",
-    "вин": "vin",
-    "пробег": "mileage",
-    "госномер": "license_plate",
-    "коробка": "transmission",
-    "кпп": "transmission",
-    "ошибка": "dtc_codes",
-    "ошибки": "dtc_codes",
-    "код ошибки": "dtc_codes",
-    "коды ошибок": "dtc_codes",
-    "неисправность": "current_problem",
-    "проблема": "current_problem",
-    "история ремонта": "repair_history",
-    "детали": "parts",
-    "запчасти": "parts",
-    "замененные детали": "parts",
-    "заменённые детали": "parts",
-    "стоимость ремонта": "repair_cost",
-    "стоимость": "repair_cost",
-    "сумма ремонта": "repair_cost",
-    };
+    const normalizedKey = normalizeFactKey(rawKey);
 
-    const normalizedKey =
-      aliases[rawKey.toLowerCase()] ||
-      rawKey
-        .toLowerCase()
-        .replace(/[^a-zа-яё0-9]+/gi, "_")
-        .replace(/^_+|_+$/g, "");
-
-    const carFactKeys = new Set([
-      "car_make", "car_model", "car_year", "generation", "drive", "side",
-      "engine", "vin", "mileage", "license_plate", "transmission",
-      "dtc_codes", "current_problem", "repair_history", "parts",
-      "repair_cost", "service_status"
-    ]);
-
-    if (carFactKeys.has(normalizedKey)) {
+    if (CAR_FACT_KEYS.has(normalizedKey)) {
       const activeCar = await getActiveCar(chatId);
       if (!activeCar) {
         await sendMessage(chatId, "Для автомобильного факта сначала выбери автомобиль: /cars");
         return Response.json({ ok: true });
       }
-      await saveCarFact(activeCar.id, normalizedKey, value);
-      await sendMessage(chatId, `Запомнил в профиле автомобиля: ${rawKey} — ${value}`);
+      const stored = await saveCarFact(activeCar.id, normalizedKey, value);
+      await sendMessage(chatId, stored
+        ? `Запомнил в профиле автомобиля: ${rawKey} — ${value}`
+        : "Не удалось сохранить факт автомобиля. Повтори запрос позже.");
     } else {
-      await saveFact(chatId, normalizedKey, value);
-      await sendMessage(chatId, `Запомнил в общей памяти: ${rawKey} — ${value}`);
+      const stored = await saveFact(chatId, normalizedKey, value);
+      await sendMessage(chatId, stored
+        ? `Запомнил в общей памяти: ${rawKey} — ${value}`
+        : "Не удалось сохранить факт в памяти. Повтори запрос позже.");
     }
 
     return Response.json({ ok: true });
@@ -1654,47 +1432,8 @@ export async function POST(req: Request) {
       return Response.json({ ok: true });
     }
 
-    const aliases: Record<string, string> = {
-      "вес батареи": "additional_battery_weight",
-      "реальное время полёта": "real_flight_time",
-      "время полёта": "flight_time",
-      "подключение батареи": "battery_connection",
-      "тип подключения": "connection_type",
-      "полезная нагрузка": "payload_weight",
-      "вес дрона": "drone_weight",
-      "прошивка": "firmware_version",
-      "дрон": "drone_model",
-      "марка": "car_make",
-      "модель": "car_model",
-      "год": "car_year",
-      "год выпуска": "car_year",
-      "двигатель": "engine",
-      "мотор": "engine",
-      "поколение": "generation",
-      "кузов": "generation",
-      "код кузова": "generation",
-      "привод": "drive",
-      "сторона": "side",
-      "vin": "vin",
-      "вин": "vin",
-      "пробег": "mileage",
-      "коробка": "transmission",
-      "кпп": "transmission",
-    };
+    const normalizedKey = normalizeFactKey(rawKey);
 
-    const normalizedKey =
-      aliases[rawKey.toLowerCase()] ||
-      rawKey
-        .toLowerCase()
-        .replace(/[^a-zа-яё0-9]+/gi, "_")
-        .replace(/^_+|_+$/g, "");
-
-    const carFactKeys = new Set([
-      "car_make", "car_model", "car_year", "generation", "drive", "side",
-      "engine", "vin", "mileage", "license_plate", "transmission",
-      "dtc_codes", "current_problem", "repair_history", "parts",
-      "repair_cost", "service_status"
-    ]);
     const supabase = getSupabase();
 
     if (!supabase) {
@@ -1702,7 +1441,7 @@ export async function POST(req: Request) {
       return Response.json({ ok: true });
     }
 
-    if (carFactKeys.has(normalizedKey)) {
+    if (CAR_FACT_KEYS.has(normalizedKey)) {
       const activeCar = await getActiveCar(chatId);
       if (!activeCar) {
         await sendMessage(chatId, "Для автомобильного факта сначала выбери автомобиль: /cars");
@@ -2017,15 +1756,31 @@ export async function POST(req: Request) {
       ? await extractFacts(openai, text)
       : [];
 
-    const explicitVehicleFacts = parseExplicitVehicleFacts(text);
+    // Explicit, deterministic details have precedence over AI extraction.
+    // Never interpret a drone question as a car profile update.
+    const explicitVehicleFacts = vehicleContextEnabled
+      ? parseExplicitVehicleFacts(text)
+      : {};
+    const factByKey = new Map<string, { key: string; value: string }>();
+    const allowedExtractedKeys = new Set([
+      "car_make", "car_model", "car_year", "generation", "drive", "side",
+      "engine", "vin", "mileage", "license_plate", "transmission",
+      "dtc_codes", "current_problem", "repair_history", "parts", "repair_cost"
+    ]);
+    for (const fact of extractedFacts) {
+      if (typeof fact?.key !== "string" || typeof fact?.value !== "string") continue;
+      const key = fact.key.toLowerCase().trim();
+      const value = fact.value.trim();
+      // AI extraction must not convert a comparison into a stored drivetrain.
+      if (key === "drive" && isAmbiguousDriveMention(text)) continue;
+      if (key === "side" && isAmbiguousSideMention(text)) continue;
+      if (allowedExtractedKeys.has(key) && value) factByKey.set(key, { key, value });
+    }
     for (const [key, value] of Object.entries(explicitVehicleFacts)) {
-      if (key === "sideCode") continue;
-      if (!extractedFacts.some((item: any) => item?.key?.toLowerCase() === key)) {
-        extractedFacts.push({ key, value });
-      }
+      if (key !== "sideCode") factByKey.set(key, { key, value });
     }
 
-    for (const fact of extractedFacts) {
+    for (const fact of factByKey.values()) {
       if (
         fact &&
         typeof fact.key === "string" &&
@@ -2574,9 +2329,12 @@ export async function POST(req: Request) {
     });
 
     if (pendingDiagnosticImage && cleanTelegramText(answer).length <= 950) {
-      await sendPhotoBuffer(chatId, pendingDiagnosticImage, answer);
+      const photoSent = await sendPhotoBuffer(chatId, pendingDiagnosticImage, answer);
+      if (!photoSent) {
+        // A failed image upload must not swallow the diagnostic answer.
+        await sendMessage(chatId, answer);
+      }
     } else {
-      // Preserve the complete answer rather than silently truncating it.
       await sendMessage(chatId, answer);
     }
   } catch (error: any) {

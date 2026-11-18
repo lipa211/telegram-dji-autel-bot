@@ -1,0 +1,35 @@
+name: Validate application
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: validation-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Regression tests
+        run: npm test
+      - name: Type-check
+        run: npx tsc --noEmit
+      - name: Build Next.js
+        run: npm run build
