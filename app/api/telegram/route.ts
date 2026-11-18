@@ -645,21 +645,24 @@ async function sendMessage(chatId: number, text: string) {
     ? characters.slice(0, 3900).join("") + "\n\n[Ответ сокращён: превышен лимит Telegram]"
     : cleaned;
 
-  const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      chat_id: chatId,
-      text: outgoingText,
-    }),
-  });
-
-  if (!response.ok) {
-    console.error("sendMessage error:", response.status, await response.text());
+  try {
+    const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: outgoingText,
+      }),
+    });
+    if (!response.ok) {
+      console.error("sendMessage error:", response.status, await response.text());
+      return false;
+    }
+    return true;
+  } catch (error) {
+    console.error("sendMessage network failure:", error);
     return false;
   }
-
-  return true;
 }
 
 
@@ -828,23 +831,20 @@ async function sendPhotoBuffer(
     "diagnostic.png"
   );
 
-  const response = await fetch(
-    `https://api.telegram.org/bot${token}/sendPhoto`,
-    {
-      method: "POST",
-      body: form,
-    }
-  );
-
-  if (!response.ok) {
-    console.error(
-      "sendPhotoBuffer error:",
-      response.status,
-      await response.text()
+  try {
+    const response = await fetch(
+      `https://api.telegram.org/bot${token}/sendPhoto`,
+      { method: "POST", body: form }
     );
+    if (!response.ok) {
+      console.error("sendPhotoBuffer error:", response.status, await response.text());
+      return false;
+    }
+    return true;
+  } catch (error) {
+    console.error("sendPhotoBuffer network failure:", error);
     return false;
   }
-  return true;
 }
 
 async function telegramFileToDataUrl(fileId: string) {
